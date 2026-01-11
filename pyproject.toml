@@ -1,0 +1,96 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "breach-ai"
+version = "4.0.0"
+description = "BREACH.AI - Autonomous Security Assessment Engine. Learn. Chain. Break. Prove."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+authors = [
+    {name = "Plutas Lab", email = "krishna@plutaslab.com"}
+]
+keywords = ["security", "penetration-testing", "vulnerability-scanner", "ai", "autonomous", "breach"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+]
+
+dependencies = [
+    "anthropic>=0.18.0",
+    "httpx>=0.27.0",
+    "rich>=13.0.0",
+    "jinja2>=3.1.0",
+    "dnspython>=2.5.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.0.0",
+    "pydantic>=2.0.0",
+    "aiofiles>=23.0.0",
+    "python-dateutil>=2.8.0",
+    "aiohttp>=3.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.0.0",
+    "black>=24.0.0",
+    "ruff>=0.2.0",
+    "mypy>=1.8.0",
+]
+api = [
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+]
+browser = [
+    "playwright>=1.41.0",
+]
+all = [
+    "breach-ai[dev,api,browser]",
+]
+
+[project.scripts]
+breach = "backend.cli:main"
+breach-api = "backend.api.server:main"
+
+[project.urls]
+Homepage = "https://breach.ai"
+Documentation = "https://docs.breach.ai"
+Repository = "https://github.com/plutaslab/breach-ai"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["backend*", "scripts*"]
+
+[tool.setuptools.package-data]
+"backend.breach.report" = ["templates/*.html", "templates/*.css"]
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
