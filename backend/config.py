@@ -59,11 +59,11 @@ class Settings(BaseSettings):
     )
 
     # ===========================================
-    # Redis
+    # Redis (Optional - uses in-memory storage if not configured)
     # ===========================================
-    redis_url: str = Field(
-        default="redis://localhost:6379",
-        description="Redis connection URL for rate limiting and job queue",
+    redis_url: Optional[str] = Field(
+        default=None,
+        description="Redis connection URL for rate limiting and job queue (optional)",
     )
 
     # ===========================================

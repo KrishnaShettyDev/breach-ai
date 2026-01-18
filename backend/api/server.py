@@ -102,6 +102,7 @@ def get_rate_limit_key(request: Request) -> str:
     return get_remote_address(request)
 
 
+# Initialize rate limiter (uses memory storage unless Redis is explicitly configured)
 limiter = Limiter(
     key_func=get_rate_limit_key,
     default_limits=[settings.rate_limit_global],
@@ -337,10 +338,16 @@ app = FastAPI(
 
 # Add rate limiting
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, lambda r, e: JSONResponse(
-    status_code=429,
-    content={"error": "Rate limit exceeded", "detail": str(e.detail)}
-))
+
+def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    """Handle rate limit exceptions safely."""
+    detail = getattr(exc, 'detail', str(exc))
+    return JSONResponse(
+        status_code=429,
+        content={"error": "Rate limit exceeded", "detail": str(detail)}
+    )
+
+app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
 app.add_middleware(SlowAPIMiddleware)
 
 # CORS - Properly configured, no wildcards
@@ -388,10 +395,19 @@ async def org_context_middleware(request: Request, call_next):
                 if row:
                     request.state.organization_id = str(row[0])
         except Exception as e:
+            # Don't let org extraction failures break the request
             logger.debug("org_context_extraction_failed", error=str(e))
 
-    response = await call_next(request)
-    return response
+    try:
+        response = await call_next(request)
+        return response
+    except Exception as e:
+        # Catch any middleware chain errors
+        logger.error("middleware_error", error=str(e), path=request.url.path)
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Internal server error"}
+        )
 
 
 # =============================================================================
@@ -473,8 +489,8 @@ async def health_deep():
         }
         overall_status = "degraded"
 
-    # Redis check (if available)
-    if REDIS_AVAILABLE:
+    # Redis check (if available and configured)
+    if REDIS_AVAILABLE and settings.redis_url:
         try:
             r = redis.from_url(settings.redis_url)
             await r.ping()
@@ -487,7 +503,7 @@ async def health_deep():
             }
             overall_status = "degraded"
     else:
-        checks["redis"] = {"status": "not_configured"}
+        checks["redis"] = {"status": "not_configured", "note": "Using in-memory rate limiting"}
 
     status_code = 200 if overall_status == "healthy" else 503
 
