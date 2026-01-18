@@ -5,21 +5,33 @@ Scan orchestration and management with timeout handling.
 """
 
 import asyncio
+import re
+import socket
 from datetime import datetime, timezone
-from typing import Optional, List, Callable
+from typing import Optional, List, Callable, Tuple
+from urllib.parse import urlparse
 from uuid import UUID
 
+import httpx
 import structlog
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.config import settings
+from backend.config import settings, is_blocked_domain, validate_scan_target
 from backend.db.models import (
     Scan, Finding, Target, Organization,
     ScanStatus, ScanMode, Severity as DBSeverity
 )
 
 logger = structlog.get_logger(__name__)
+
+# Optional DNS library
+try:
+    import dns.resolver
+    DNS_AVAILABLE = True
+except ImportError:
+    DNS_AVAILABLE = False
+    logger.warning("dnspython not installed, DNS verification disabled")
 
 
 class ScanService:
@@ -39,18 +51,57 @@ class ScanService:
         config: dict = None,
         target_id: Optional[UUID] = None,
     ) -> Scan:
-        """Create a new scan."""
+        """Create a new scan.
+
+        SECURITY: Scans require a verified target. Ad-hoc URLs are not allowed.
+        This prevents abuse where users scan sites they don't own.
+        """
 
         # Check organization limits
         org = await self._get_organization(organization_id)
+        if not org:
+            raise ValueError("Organization not found")
+
         if org.scans_this_month >= org.max_scans_per_month:
             raise ValueError("Monthly scan limit reached. Please upgrade your plan.")
+
+        # SECURITY: Require a verified target
+        if not target_id:
+            raise ValueError(
+                "Target ID is required. Please add and verify a target before scanning. "
+                "Ad-hoc URLs are not allowed for security reasons."
+            )
+
+        # Get and validate the target
+        target = await self._get_target(target_id)
+        if not target:
+            raise ValueError("Target not found")
+
+        # Verify target belongs to this organization
+        if target.organization_id != organization_id:
+            logger.warning(
+                "scan_target_org_mismatch",
+                target_id=str(target_id),
+                target_org=str(target.organization_id),
+                request_org=str(organization_id),
+            )
+            raise ValueError("Target does not belong to this organization")
+
+        # CRITICAL: Target must be verified (ownership proven)
+        if not target.is_verified:
+            raise ValueError(
+                "Target must be verified before scanning. "
+                "Please verify ownership via DNS, file upload, or meta tag."
+            )
+
+        # Use the target's URL, not user-provided URL (prevent manipulation)
+        verified_url = target.url
 
         scan = Scan(
             organization_id=organization_id,
             target_id=target_id,
             created_by=user_id,
-            target_url=target_url,
+            target_url=verified_url,  # Use verified target URL
             mode=ScanMode(mode),
             status=ScanStatus.PENDING,
             config=config or {},
@@ -67,11 +118,19 @@ class ScanService:
             "scan_created",
             scan_id=str(scan.id),
             organization_id=str(organization_id),
-            target_url=target_url,
+            target_id=str(target_id),
+            target_url=verified_url,
             mode=mode
         )
 
         return scan
+
+    async def _get_target(self, target_id: UUID) -> Optional[Target]:
+        """Get target by ID."""
+        result = await self.db.execute(
+            select(Target).where(Target.id == target_id)
+        )
+        return result.scalar_one_or_none()
 
     async def get_scan(self, scan_id: UUID, organization_id: UUID) -> Optional[Scan]:
         """Get a scan by ID."""
@@ -171,7 +230,7 @@ class ScanService:
         organization_id: UUID,
         progress_callback: Optional[Callable] = None,
     ) -> Scan:
-        """Start executing a scan with timeout handling."""
+        """Start executing a scan with timeout handling and integrations."""
 
         scan = await self.get_scan(scan_id, organization_id)
         if not scan:
@@ -179,6 +238,12 @@ class ScanService:
 
         if scan.status != ScanStatus.PENDING:
             raise ValueError("Scan already started or completed")
+
+        # Get target for integrations
+        target = await self._get_target(scan.target_id) if scan.target_id else None
+
+        # Initialize integration manager
+        integration_manager = await self._init_integrations(organization_id)
 
         # Update status
         scan.status = ScanStatus.RUNNING
@@ -192,10 +257,17 @@ class ScanService:
             mode=scan.mode.value
         )
 
+        # Notify integrations: scan started
+        if integration_manager and target:
+            try:
+                await integration_manager.notify_scan_started(scan, target)
+            except Exception as e:
+                logger.warning("integration_notify_failed", event="scan_started", error=str(e))
+
         try:
             # Run scan with timeout
             await asyncio.wait_for(
-                self._execute_scan(scan),
+                self._execute_scan(scan, integration_manager, target),
                 timeout=settings.scan_timeout_seconds
             )
 
@@ -212,6 +284,25 @@ class ScanService:
                 findings_count=scan.findings_count,
                 duration_seconds=scan.duration_seconds
             )
+
+            # Notify integrations: scan completed
+            if integration_manager and target:
+                try:
+                    findings_summary = {
+                        "total": scan.findings_count,
+                        "critical": scan.critical_count,
+                        "high": scan.high_count,
+                        "medium": scan.medium_count,
+                        "low": scan.low_count,
+                    }
+                    await integration_manager.notify_scan_completed(
+                        scan, target, findings_summary
+                    )
+                except Exception as e:
+                    logger.warning("integration_notify_failed", event="scan_completed", error=str(e))
+
+            # Send email notification
+            await self._send_completion_email(scan, organization_id)
 
         except asyncio.TimeoutError:
             scan.status = ScanStatus.FAILED
@@ -247,28 +338,141 @@ class ScanService:
 
         return scan
 
-    async def _execute_scan(self, scan: Scan) -> None:
+    async def _init_integrations(self, organization_id: UUID):
+        """Initialize integration manager for organization."""
+        try:
+            from backend.services.integrations import IntegrationManager
+            manager = IntegrationManager(self.db)
+            await manager.load_integrations(organization_id)
+            return manager
+        except Exception as e:
+            logger.warning("integrations_init_failed", error=str(e))
+            return None
+
+    async def _broadcast_progress(self, scan_id: str, event_type: str, data: dict) -> None:
+        """Broadcast scan progress via WebSocket."""
+        try:
+            from backend.api.server import broadcast_scan_progress
+            await broadcast_scan_progress(scan_id, {
+                "type": event_type,
+                "scan_id": scan_id,
+                **data
+            })
+        except Exception as e:
+            logger.debug("ws_broadcast_failed", error=str(e))
+
+    async def _execute_scan(
+        self,
+        scan: Scan,
+        integration_manager=None,
+        target=None
+    ) -> None:
         """Execute the actual scan (called within timeout wrapper)."""
         from backend.breach.engine import BreachEngine
 
-        # Determine mode
-        deep_mode = scan.mode in [ScanMode.DEEP, ScanMode.CHAINBREAKER]
+        # Map scan mode to engine mode
+        mode_map = {
+            ScanMode.QUICK: "quick",
+            ScanMode.NORMAL: "deep",  # Normal uses deep
+            ScanMode.DEEP: "deep",
+            ScanMode.CHAINBREAKER: "chainbreaker",
+        }
+        engine_mode = mode_map.get(scan.mode, "quick")
 
         # Extract config
-        cookie = scan.config.get("cookies") if scan.config else None
+        config = scan.config or {}
+        cookie = config.get("cookies")
+        cookie2 = config.get("cookies2")
+        token = config.get("token")
+        timeout_hours = config.get("timeout_hours", 1)
 
-        # Run the scan
-        async with BreachEngine(deep_mode=deep_mode) as engine:
+        # Broadcast scan started
+        await self._broadcast_progress(str(scan.id), "scan_started", {
+            "target_url": scan.target_url,
+            "mode": scan.mode.value,
+            "phase": "initializing",
+        })
+
+        # Run the scan with unified engine
+        async with BreachEngine(mode=engine_mode, timeout_hours=timeout_hours) as engine:
+            # Register callback for findings -> integrations + WebSocket
+            async def on_finding_discovered(finding):
+                # Broadcast finding via WebSocket
+                await self._broadcast_progress(str(scan.id), "finding_discovered", {
+                    "title": finding.title,
+                    "severity": finding.severity.name if hasattr(finding.severity, 'name') else str(finding.severity),
+                    "category": finding.category,
+                    "endpoint": finding.endpoint,
+                })
+
+                # Notify integrations for critical findings
+                if integration_manager and target and finding.severity.value >= 3:
+                    try:
+                        from backend.db.models import Finding as DBFinding
+                        db_finding = DBFinding(
+                            scan_id=scan.id,
+                            title=finding.title,
+                            severity=DBSeverity.CRITICAL if finding.severity.value == 4 else DBSeverity.HIGH,
+                            category=finding.category,
+                            endpoint=finding.endpoint,
+                            description=finding.description,
+                        )
+                        await integration_manager.notify_critical_finding(
+                            db_finding, target, scan.id
+                        )
+                    except Exception as e:
+                        logger.warning("critical_finding_notify_failed", error=str(e))
+
+            engine.on_finding(on_finding_discovered)
+
+            # Broadcast phase update
+            await self._broadcast_progress(str(scan.id), "phase_update", {
+                "phase": "scanning",
+                "message": f"Running {engine_mode} scan against {scan.target_url}",
+            })
+
+            # Run the breach
             await engine.breach(
                 target=scan.target_url,
                 cookie=cookie,
+                cookie2=cookie2,
+                token=token,
             )
+
+            # Broadcast saving findings phase
+            await self._broadcast_progress(str(scan.id), "phase_update", {
+                "phase": "saving_results",
+                "message": f"Saving {len(engine.state.findings)} findings...",
+            })
 
             # Save findings
             await self._save_findings(scan, engine.state)
 
             # Update scan stats
             await self._update_scan_stats(scan, engine.state)
+
+            # Broadcast completion
+            await self._broadcast_progress(str(scan.id), "scan_completed", {
+                "findings_count": scan.findings_count,
+                "critical_count": scan.critical_count,
+                "high_count": scan.high_count,
+                "medium_count": scan.medium_count,
+                "low_count": scan.low_count,
+            })
+
+            # Notify if breach achieved (chainbreaker mode)
+            if engine.chainbreaker_mode and integration_manager and target:
+                # Check if we have critical findings indicating breach
+                critical_count = len([f for f in engine.state.findings if f.severity.value == 4])
+                if critical_count > 0:
+                    try:
+                        await integration_manager.notify_breach_achieved(
+                            target=target,
+                            access_level="database" if critical_count > 2 else "user",
+                            systems_compromised=[scan.target_url],
+                        )
+                    except Exception as e:
+                        logger.warning("breach_achieved_notify_failed", error=str(e))
 
     async def _send_failure_alert(self, scan: Scan) -> None:
         """Send alert on scan failure via configured webhook."""
@@ -286,6 +490,46 @@ class ScanService:
             logger.warning("alerts_module_not_available")
         except Exception as e:
             logger.error("alert_send_failed", error=str(e))
+
+    async def _send_completion_email(self, scan: Scan, organization_id: UUID) -> None:
+        """Send email notification when scan completes."""
+        try:
+            from backend.services.email import get_email_service
+
+            # Get the user who created the scan
+            if not scan.created_by:
+                logger.debug("scan_no_creator", scan_id=str(scan.id))
+                return
+
+            from sqlalchemy import select
+            from backend.db.models import User
+            result = await self.db.execute(
+                select(User).where(User.id == scan.created_by)
+            )
+            user = result.scalar_one_or_none()
+
+            if not user or not user.email:
+                logger.debug("scan_creator_no_email", scan_id=str(scan.id))
+                return
+
+            email_service = get_email_service()
+            await email_service.send_scan_completed(
+                to_email=user.email,
+                target_url=scan.target_url,
+                scan_id=str(scan.id),
+                findings_count=scan.findings_count or 0,
+                critical_count=scan.critical_count or 0,
+                high_count=scan.high_count or 0,
+                medium_count=scan.medium_count or 0,
+                low_count=scan.low_count or 0,
+                total_impact=scan.total_business_impact or 0,
+                dashboard_url=settings.frontend_url,
+            )
+
+            logger.info("scan_completion_email_sent", scan_id=str(scan.id), to=user.email)
+
+        except Exception as e:
+            logger.warning("scan_completion_email_failed", scan_id=str(scan.id), error=str(e))
 
     async def _save_findings(self, scan: Scan, state) -> None:
         """Save findings from scan state to database."""
@@ -487,8 +731,35 @@ class ScanService:
         name: str,
         description: Optional[str] = None,
     ) -> Target:
-        """Create a scan target."""
+        """Create a scan target.
+
+        SECURITY: Validates the target domain against blocked patterns.
+        """
         import secrets
+
+        # Extract domain from URL
+        parsed = urlparse(url)
+        domain = parsed.netloc
+        if not domain:
+            raise ValueError("Invalid URL: no domain found")
+
+        # Remove port if present for validation
+        validation_domain = domain.split(":")[0] if ":" in domain else domain
+
+        # Get organization to check subscription tier
+        org = await self._get_organization(organization_id)
+        tier = org.subscription_tier.value if org else "free"
+
+        # SECURITY: Check if domain is blocked or restricted
+        is_valid, error_message = validate_scan_target(validation_domain, tier)
+        if not is_valid:
+            logger.warning(
+                "target_creation_blocked",
+                organization_id=str(organization_id),
+                domain=validation_domain,
+                reason=error_message,
+            )
+            raise ValueError(error_message)
 
         target = Target(
             organization_id=organization_id,
@@ -500,6 +771,13 @@ class ScanService:
         self.db.add(target)
         await self.db.commit()
         await self.db.refresh(target)
+
+        logger.info(
+            "target_created",
+            target_id=str(target.id),
+            organization_id=str(organization_id),
+            domain=validation_domain,
+        )
 
         return target
 
@@ -529,8 +807,14 @@ class ScanService:
         await self.db.commit()
         return True
 
-    async def verify_target(self, target_id: UUID, organization_id: UUID, method: str) -> bool:
-        """Verify target ownership."""
+    async def verify_target(
+        self, target_id: UUID, organization_id: UUID, method: str
+    ) -> Tuple[bool, str]:
+        """Verify target ownership via DNS, file, or meta tag.
+
+        Returns:
+            Tuple[bool, str]: (success, message)
+        """
         result = await self.db.execute(
             select(Target).where(
                 Target.id == target_id,
@@ -540,16 +824,206 @@ class ScanService:
         target = result.scalar_one_or_none()
 
         if not target:
-            return False
+            return False, "Target not found"
 
-        # TODO: Implement actual verification (DNS TXT, file upload, meta tag)
-        # For now, just mark as verified
-        target.is_verified = True
-        target.verification_method = method
-        target.verified_at = datetime.now(timezone.utc)
+        if not target.verification_token:
+            return False, "No verification token found. Please recreate the target."
 
-        await self.db.commit()
-        return True
+        # Extract domain from target URL
+        parsed = urlparse(target.url)
+        domain = parsed.netloc
+        if not domain:
+            return False, "Invalid target URL"
+
+        # Remove port if present
+        if ":" in domain:
+            domain = domain.split(":")[0]
+
+        logger.info(
+            "verifying_target",
+            target_id=str(target_id),
+            domain=domain,
+            method=method,
+        )
+
+        # Perform verification based on method
+        try:
+            if method == "dns":
+                success, message = await self._verify_dns(domain, target.verification_token)
+            elif method == "file":
+                success, message = await self._verify_file(target.url, target.verification_token)
+            elif method == "meta":
+                success, message = await self._verify_meta(target.url, target.verification_token)
+            else:
+                return False, f"Unknown verification method: {method}"
+
+            if success:
+                target.is_verified = True
+                target.verification_method = method
+                target.verified_at = datetime.now(timezone.utc)
+                await self.db.commit()
+
+                logger.info(
+                    "target_verified",
+                    target_id=str(target_id),
+                    domain=domain,
+                    method=method,
+                )
+
+            return success, message
+
+        except Exception as e:
+            logger.error(
+                "verification_failed",
+                target_id=str(target_id),
+                method=method,
+                error=str(e),
+            )
+            return False, f"Verification error: {str(e)}"
+
+    async def _verify_dns(self, domain: str, token: str) -> Tuple[bool, str]:
+        """Verify ownership via DNS TXT record.
+
+        Expected record: _breach-verify.{domain} TXT {token}
+        """
+        if not DNS_AVAILABLE:
+            return False, "DNS verification not available. Please install dnspython or use file/meta verification."
+
+        verification_domain = f"_breach-verify.{domain}"
+
+        try:
+            answers = dns.resolver.resolve(verification_domain, "TXT")
+            for rdata in answers:
+                for txt_string in rdata.strings:
+                    txt_value = txt_string.decode("utf-8").strip()
+                    if txt_value == token:
+                        return True, "DNS verification successful"
+
+            return False, f"Token not found in TXT record for {verification_domain}"
+
+        except dns.resolver.NXDOMAIN:
+            return False, f"DNS record not found: {verification_domain}. Please add a TXT record."
+        except dns.resolver.NoAnswer:
+            return False, f"No TXT record found for {verification_domain}"
+        except dns.resolver.Timeout:
+            return False, "DNS lookup timed out. Please try again."
+        except Exception as e:
+            return False, f"DNS lookup error: {str(e)}"
+
+    async def _verify_file(self, base_url: str, token: str) -> Tuple[bool, str]:
+        """Verify ownership via file at /.well-known/breach-verify.txt"""
+        # Ensure base URL doesn't have trailing slash
+        base_url = base_url.rstrip("/")
+        verification_url = f"{base_url}/.well-known/breach-verify.txt"
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                response = await client.get(verification_url)
+
+                if response.status_code == 404:
+                    return False, (
+                        f"Verification file not found at {verification_url}. "
+                        f"Please create the file with content: {token}"
+                    )
+
+                if response.status_code != 200:
+                    return False, f"Failed to fetch verification file: HTTP {response.status_code}"
+
+                content = response.text.strip()
+
+                if content == token:
+                    return True, "File verification successful"
+
+                return False, (
+                    f"Token mismatch. Expected: {token[:8]}... "
+                    f"Found: {content[:20]}..."
+                )
+
+        except httpx.TimeoutException:
+            return False, "Request timed out. Please ensure the server is accessible."
+        except httpx.RequestError as e:
+            return False, f"Request failed: {str(e)}"
+
+    async def _verify_meta(self, base_url: str, token: str) -> Tuple[bool, str]:
+        """Verify ownership via meta tag in HTML.
+
+        Expected: <meta name="breach-site-verification" content="{token}">
+        """
+        try:
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                response = await client.get(base_url)
+
+                if response.status_code != 200:
+                    return False, f"Failed to fetch page: HTTP {response.status_code}"
+
+                html = response.text
+
+                # Look for the meta tag
+                # Pattern: <meta name="breach-site-verification" content="TOKEN">
+                pattern = r'<meta\s+name=["\']breach-site-verification["\']\s+content=["\']([^"\']+)["\']'
+                match = re.search(pattern, html, re.IGNORECASE)
+
+                if not match:
+                    # Try alternate attribute order
+                    pattern = r'<meta\s+content=["\']([^"\']+)["\']\s+name=["\']breach-site-verification["\']'
+                    match = re.search(pattern, html, re.IGNORECASE)
+
+                if not match:
+                    return False, (
+                        'Meta tag not found. Please add to your <head>: '
+                        f'<meta name="breach-site-verification" content="{token}">'
+                    )
+
+                found_token = match.group(1).strip()
+
+                if found_token == token:
+                    return True, "Meta tag verification successful"
+
+                return False, f"Token mismatch in meta tag. Expected: {token[:8]}..."
+
+        except httpx.TimeoutException:
+            return False, "Request timed out. Please ensure the server is accessible."
+        except httpx.RequestError as e:
+            return False, f"Request failed: {str(e)}"
+
+    def get_verification_instructions(self, target: Target) -> dict:
+        """Get verification instructions for a target."""
+        parsed = urlparse(target.url)
+        domain = parsed.netloc
+        if ":" in domain:
+            domain = domain.split(":")[0]
+
+        token = target.verification_token
+
+        return {
+            "dns": {
+                "record_type": "TXT",
+                "record_name": f"_breach-verify.{domain}",
+                "record_value": token,
+                "instructions": (
+                    f"Add a TXT record to your DNS:\n"
+                    f"  Name: _breach-verify.{domain}\n"
+                    f"  Type: TXT\n"
+                    f"  Value: {token}"
+                ),
+            },
+            "file": {
+                "file_path": "/.well-known/breach-verify.txt",
+                "file_content": token,
+                "full_url": f"{target.url.rstrip('/')}/.well-known/breach-verify.txt",
+                "instructions": (
+                    f"Create a file at /.well-known/breach-verify.txt with content:\n"
+                    f"  {token}"
+                ),
+            },
+            "meta": {
+                "tag": f'<meta name="breach-site-verification" content="{token}">',
+                "instructions": (
+                    f'Add this meta tag to your homepage <head>:\n'
+                    f'  <meta name="breach-site-verification" content="{token}">'
+                ),
+            },
+        }
 
     # ============== HELPERS ==============
 

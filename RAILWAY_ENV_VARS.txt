@@ -1,0 +1,37 @@
+# BREACH.AI - Railway Environment Variables
+# Copy these to Railway Dashboard > Variables
+# Or use: railway variables set KEY=VALUE
+
+# ============== REQUIRED ==============
+DATABASE_URL=postgresql+asyncpg://neondb_owner:npg_PHfNpztO0k8Q@ep-shiny-violet-ah7x6152-pooler.c-3.us-east-1.aws.neon.tech/neondb?ssl=require
+
+CLERK_SECRET_KEY=sk_test_HZSrtjfNFaRqvITeLvr5LVq69Y2FKyqdRIziw5uiMw
+CLERK_PUBLISHABLE_KEY=pk_test_YW1hemVkLW9yY2EtODguY2xlcmsuYWNjb3VudHMuZGV2JA
+
+ANTHROPIC_API_KEY=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
+
+# ============== SERVER ==============
+HOST=0.0.0.0
+PORT=8000
+DEBUG=false
+ENVIRONMENT=production
+
+# ============== CORS ==============
+# Update this after deploying frontend
+CORS_ORIGINS=http://localhost:3000,https://breach.ai
+
+# ============== OPTIONAL ==============
+REDIS_URL=redis://localhost:6379
+QDRANT_URL=http://localhost:6333
+EMAIL_FROM=noreply@breach.ai
+EMAIL_FROM_NAME=BREACH.AI
+FRONTEND_URL=https://breach.ai
+
+# ============== LATER (when you have keys) ==============
+# STRIPE_SECRET_KEY=sk_live_xxxx
+# STRIPE_WEBHOOK_SECRET=whsec_xxxx
+# QDRANT_API_KEY=xxxx
+# R2_ENDPOINT_URL=https://xxxx.r2.cloudflarestorage.com
+# R2_ACCESS_KEY_ID=xxxx
+# R2_SECRET_ACCESS_KEY=xxxx
+# SENDGRID_API_KEY=SG.xxxx

@@ -61,3 +61,19 @@ htmlcov/
 
 # Build artifacts
 *.map
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Output directories
+output/
+breach_output/
+reports/
+storage/
+
+# Node modules (frontend)
+node_modules/
+.next/
+.turbo/

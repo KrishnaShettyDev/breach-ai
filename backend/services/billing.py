@@ -18,8 +18,12 @@ from backend.db.models import Organization, SubscriptionTier, SubscriptionStatus
 
 logger = structlog.get_logger(__name__)
 
-# Initialize Stripe with config
-stripe.api_key = settings.stripe_secret_key
+# Initialize Stripe with config (if available)
+STRIPE_ENABLED = bool(settings.stripe_secret_key)
+if STRIPE_ENABLED:
+    stripe.api_key = settings.stripe_secret_key
+else:
+    logger.warning("stripe_not_configured", message="Stripe API key not set, billing features disabled")
 
 # Pricing configuration
 PRICING = {
@@ -39,9 +43,9 @@ PRICING = {
         "max_targets": 10,
         "max_team_members": 5,
     },
-    SubscriptionTier.BUSINESS: {
-        "price_id": settings.stripe_business_price_id or None,
-        "name": "Business",
+    SubscriptionTier.PRO: {
+        "price_id": settings.stripe_pro_price_id or None,
+        "name": "Pro",
         "price": 199,
         "max_scans_per_month": 200,
         "max_targets": 50,
@@ -64,8 +68,14 @@ class BillingService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    def _require_stripe(self):
+        """Raise error if Stripe is not configured."""
+        if not STRIPE_ENABLED:
+            raise ValueError("Billing is not configured. Please add STRIPE_SECRET_KEY to enable payments.")
+
     async def get_or_create_customer(self, organization: Organization, email: str) -> str:
         """Get or create a Stripe customer for the organization."""
+        self._require_stripe()
 
         if organization.stripe_customer_id:
             return organization.stripe_customer_id
@@ -128,6 +138,7 @@ class BillingService:
         return_url: str,
     ) -> str:
         """Create a Stripe billing portal session."""
+        self._require_stripe()
 
         if not organization.stripe_customer_id:
             raise ValueError("Organization has no billing account")

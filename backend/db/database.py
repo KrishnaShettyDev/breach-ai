@@ -11,8 +11,6 @@ from typing import AsyncGenerator
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy.pool import QueuePool
-
 from backend.config import settings
 
 # Database URL from config
@@ -27,7 +25,7 @@ engine_kwargs = {
     "echo": settings.debug,
 }
 
-# PostgreSQL-specific settings
+# PostgreSQL-specific settings (async engine uses AsyncAdaptedQueuePool automatically)
 if DATABASE_URL.startswith("postgresql"):
     engine_kwargs.update({
         "pool_pre_ping": True,
@@ -35,7 +33,6 @@ if DATABASE_URL.startswith("postgresql"):
         "max_overflow": 20,
         "pool_timeout": 30,
         "pool_recycle": 1800,  # Recycle connections after 30 minutes
-        "poolclass": QueuePool,
     })
 
 engine = create_async_engine(DATABASE_URL, **engine_kwargs)

@@ -31,7 +31,7 @@ class UserRole(str, PyEnum):
 class SubscriptionTier(str, PyEnum):
     FREE = "free"
     STARTER = "starter"
-    BUSINESS = "business"
+    PRO = "pro"
     ENTERPRISE = "enterprise"
 
 
@@ -81,18 +81,21 @@ class Organization(Base):
     # Billing
     stripe_customer_id: Mapped[Optional[str]] = mapped_column(String(255), unique=True, nullable=True)
     subscription_tier: Mapped[SubscriptionTier] = mapped_column(
-        Enum(SubscriptionTier), default=SubscriptionTier.FREE
+        Enum(SubscriptionTier, values_callable=lambda x: [e.value for e in x]),
+        default=SubscriptionTier.FREE
     )
     subscription_status: Mapped[SubscriptionStatus] = mapped_column(
-        Enum(SubscriptionStatus), default=SubscriptionStatus.TRIALING
+        Enum(SubscriptionStatus, values_callable=lambda x: [e.value for e in x]),
+        default=SubscriptionStatus.TRIALING
     )
     stripe_subscription_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     trial_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
-    # Limits (based on tier)
-    max_scans_per_month: Mapped[int] = mapped_column(Integer, default=10)
-    max_targets: Mapped[int] = mapped_column(Integer, default=5)
-    max_team_members: Mapped[int] = mapped_column(Integer, default=3)
+    # Limits (based on tier) - Free tier: 1 target, 1 scan
+    max_scans_per_month: Mapped[int] = mapped_column(Integer, default=1)
+    max_targets: Mapped[int] = mapped_column(Integer, default=1)
+    max_team_members: Mapped[int] = mapped_column(Integer, default=1)
+    max_concurrent_scans: Mapped[int] = mapped_column(Integer, default=1)
     scans_this_month: Mapped[int] = mapped_column(Integer, default=0)
 
     # Settings
@@ -154,7 +157,7 @@ class OrganizationMember(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
-    role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.MEMBER)
+    role: Mapped[UserRole] = mapped_column(Enum(UserRole, values_callable=lambda x: [e.value for e in x]), default=UserRole.MEMBER)
 
     # Timestamps
     joined_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -222,8 +225,8 @@ class Scan(Base):
 
     # Scan info
     target_url: Mapped[str] = mapped_column(String(500), nullable=False)
-    mode: Mapped[ScanMode] = mapped_column(Enum(ScanMode), default=ScanMode.NORMAL)
-    status: Mapped[ScanStatus] = mapped_column(Enum(ScanStatus), default=ScanStatus.PENDING)
+    mode: Mapped[ScanMode] = mapped_column(Enum(ScanMode, values_callable=lambda x: [e.value for e in x]), default=ScanMode.NORMAL)
+    status: Mapped[ScanStatus] = mapped_column(Enum(ScanStatus, values_callable=lambda x: [e.value for e in x]), default=ScanStatus.PENDING)
 
     # Progress
     progress: Mapped[int] = mapped_column(Integer, default=0)  # 0-100
@@ -280,7 +283,7 @@ class Finding(Base):
 
     # Finding details
     title: Mapped[str] = mapped_column(String(500), nullable=False)
-    severity: Mapped[Severity] = mapped_column(Enum(Severity), nullable=False)
+    severity: Mapped[Severity] = mapped_column(Enum(Severity, values_callable=lambda x: [e.value for e in x]), nullable=False)
     category: Mapped[str] = mapped_column(String(100), nullable=False)  # sqli, xss, idor, etc.
 
     # Location
@@ -416,7 +419,7 @@ class ScheduledScan(Base):
     timezone: Mapped[str] = mapped_column(String(50), default="UTC")
 
     # Scan config
-    mode: Mapped[ScanMode] = mapped_column(Enum(ScanMode), default=ScanMode.NORMAL)
+    mode: Mapped[ScanMode] = mapped_column(Enum(ScanMode, values_callable=lambda x: [e.value for e in x]), default=ScanMode.NORMAL)
     config: Mapped[dict] = mapped_column(JSON, default=dict)
 
     # Status
@@ -427,3 +430,224 @@ class ScheduledScan(Base):
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ============== BREACH.AI v2 - KILL CHAIN MODELS ==============
+
+class BreachPhase(str, PyEnum):
+    """Kill chain phases."""
+    RECON = "recon"
+    INITIAL_ACCESS = "initial_access"
+    FOOTHOLD = "foothold"
+    ESCALATION = "escalation"
+    LATERAL = "lateral"
+    DATA_ACCESS = "data_access"
+    PROOF = "proof"
+
+
+class AccessLevel(str, PyEnum):
+    """Access levels achieved during breach."""
+    NONE = "none"
+    ANONYMOUS = "anonymous"
+    USER = "user"
+    PRIVILEGED_USER = "privileged_user"
+    ADMIN = "admin"
+    DATABASE = "database"
+    CLOUD_USER = "cloud_user"
+    CLOUD_ADMIN = "cloud_admin"
+    SYSTEM = "system"
+    ROOT = "root"
+
+
+class BreachSession(Base):
+    """
+    BREACH.AI v2 - Breach Session.
+    A complete breach assessment that runs through the 7-phase kill chain.
+    """
+    __tablename__ = "breach_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    target_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("targets.id", ondelete="SET NULL"), nullable=True
+    )
+    started_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # Target info
+    target_url: Mapped[str] = mapped_column(String(500), nullable=False)
+
+    # Status
+    status: Mapped[str] = mapped_column(String(50), default="pending")  # pending, running, paused, completed, failed
+    current_phase: Mapped[BreachPhase] = mapped_column(Enum(BreachPhase, values_callable=lambda x: [e.value for e in x]), default=BreachPhase.RECON)
+
+    # Configuration
+    config: Mapped[dict] = mapped_column(JSON, default=dict)  # mode, timeout, scope, rules
+    timeout_hours: Mapped[int] = mapped_column(Integer, default=24)
+    scope: Mapped[list] = mapped_column(JSON, default=list)  # allowed domains/paths
+    rules_of_engagement: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    # Results
+    breach_achieved: Mapped[bool] = mapped_column(Boolean, default=False)
+    highest_access: Mapped[AccessLevel] = mapped_column(Enum(AccessLevel, values_callable=lambda x: [e.value for e in x]), default=AccessLevel.NONE)
+    systems_compromised: Mapped[list] = mapped_column(JSON, default=list)
+    findings_count: Mapped[int] = mapped_column(Integer, default=0)
+    evidence_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Business impact
+    total_business_impact: Mapped[float] = mapped_column(Float, default=0.0)
+    records_exposed: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Timing
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    duration_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Error info
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    steps = relationship("BreachStep", back_populates="session", cascade="all, delete-orphan")
+    evidence = relationship("BreachEvidence", back_populates="session", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ix_breach_session_org_status", "organization_id", "status"),
+        Index("ix_breach_session_created", "created_at"),
+    )
+
+
+class BreachStep(Base):
+    """
+    A single step in the breach chain.
+    """
+    __tablename__ = "breach_steps"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("breach_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+
+    # Step info
+    sequence_num: Mapped[int] = mapped_column(Integer, nullable=False)
+    phase: Mapped[BreachPhase] = mapped_column(Enum(BreachPhase, values_callable=lambda x: [e.value for e in x]), nullable=False)
+
+    # What was attempted
+    module_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    action: Mapped[str] = mapped_column(String(255), nullable=False)
+    target: Mapped[str] = mapped_column(String(500), nullable=False)
+    parameters: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    # AI reasoning
+    reasoning: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    expected_outcome: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Result
+    success: Mapped[bool] = mapped_column(Boolean, default=False)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Access gained
+    access_gained: Mapped[Optional[AccessLevel]] = mapped_column(Enum(AccessLevel, values_callable=lambda x: [e.value for e in x]), nullable=True)
+
+    # Timing
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Timestamp
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    session = relationship("BreachSession", back_populates="steps")
+
+    __table_args__ = (
+        Index("ix_breach_step_session", "session_id"),
+        Index("ix_breach_step_phase", "phase"),
+    )
+
+
+class BreachEvidence(Base):
+    """
+    Evidence collected during breach - proof of compromise.
+    """
+    __tablename__ = "breach_evidence"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("breach_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    step_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("breach_steps.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # Evidence type
+    evidence_type: Mapped[str] = mapped_column(String(50), nullable=False)  # screenshot, data_sample, command_output, etc.
+
+    # Content
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    proves: Mapped[str] = mapped_column(Text, nullable=False)  # What does this prove?
+    content: Mapped[dict] = mapped_column(JSON, default=dict)
+    content_type: Mapped[str] = mapped_column(String(100), default="application/json")
+    content_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # SHA256
+
+    # Safety
+    is_redacted: Mapped[bool] = mapped_column(Boolean, default=False)
+    redaction_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Severity
+    severity: Mapped[Severity] = mapped_column(Enum(Severity, values_callable=lambda x: [e.value for e in x]), default=Severity.INFO)
+
+    # Timestamp
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    session = relationship("BreachSession", back_populates="evidence")
+
+    __table_args__ = (
+        Index("ix_breach_evidence_session", "session_id"),
+        Index("ix_breach_evidence_type", "evidence_type"),
+    )
+
+
+class BrainMemory(Base):
+    """
+    AI Brain memory - learned patterns for targets across sessions.
+    Used by the learning engine for cross-session intelligence.
+    """
+    __tablename__ = "brain_memory"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    target_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("targets.id", ondelete="CASCADE"), nullable=False
+    )
+
+    # Memory type: technology, endpoint, parameter, vulnerability_hotspot, successful_attack, module_effectiveness
+    memory_type: Mapped[str] = mapped_column(String(50), nullable=False)
+
+    # Content
+    key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)  # JSON string
+
+    # Confidence (0.0 to 1.0) - decays over time
+    confidence: Mapped[float] = mapped_column(Float, default=1.0)
+
+    # Access tracking
+    access_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_accessed: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("ix_brain_memory_target", "target_id"),
+        Index("ix_brain_memory_type", "memory_type"),
+        Index("ix_brain_memory_key", "key"),
+    )

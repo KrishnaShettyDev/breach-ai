@@ -43,6 +43,14 @@ from backend.db.models import Scan, ScanStatus
 from backend.api.routes.auth import router as auth_router
 from backend.api.routes.scans import router as scans_router, targets_router
 from backend.api.routes.billing import router as billing_router
+from backend.api.routes.breaches import router as breaches_router
+from backend.api.routes.assessments import router as assessments_router
+from backend.api.routes.schedules import router as schedules_router
+from backend.api.routes.integrations import router as integrations_router
+from backend.api.routes.attestations import router as attestations_router
+from backend.api.routes.learning import router as learning_router
+from backend.api.routes.recommendations import router as recommendations_router
+from backend.api.routes.analytics import router as analytics_router
 
 # Conditional imports for optional features
 try:
@@ -69,13 +77,35 @@ except ImportError:
 logger = structlog.get_logger(__name__)
 
 # =============================================================================
-# Rate Limiting
+# Rate Limiting (Per-Organization)
 # =============================================================================
 
+def get_rate_limit_key(request: Request) -> str:
+    """
+    Get rate limit key - uses organization ID when authenticated, IP otherwise.
+
+    This prevents abuse from any single organization while not penalizing
+    legitimate users behind the same NAT/proxy.
+    """
+    # Try to get organization ID from request state (set by auth middleware)
+    org_id = getattr(request.state, "organization_id", None)
+    if org_id:
+        return f"org:{org_id}"
+
+    # Try to get API key prefix from header (for quick identification)
+    api_key = request.headers.get("X-API-Key", "")
+    if api_key and api_key.startswith("breach_"):
+        # Use first 16 chars of API key as identifier (not full key for privacy)
+        return f"apikey:{api_key[:16]}"
+
+    # Fall back to IP address for unauthenticated requests
+    return get_remote_address(request)
+
+
 limiter = Limiter(
-    key_func=get_remote_address,
+    key_func=get_rate_limit_key,
     default_limits=[settings.rate_limit_global],
-    storage_uri=settings.redis_url if REDIS_AVAILABLE else None,
+    storage_uri=settings.redis_url if REDIS_AVAILABLE and settings.redis_url else None,
 )
 
 # =============================================================================
@@ -191,9 +221,25 @@ async def lifespan(app: FastAPI):
     if recovered:
         logger.info("stale_scans_recovered", count=recovered)
 
+    # Start continuous scanner for scheduled scans
+    try:
+        from backend.services.scheduler import start_continuous_scanner
+        await start_continuous_scanner()
+        logger.info("continuous_scanner_started")
+    except Exception as e:
+        logger.warning("continuous_scanner_failed_to_start", error=str(e))
+
     yield
 
     # Shutdown
+    # Stop continuous scanner
+    try:
+        from backend.services.scheduler import stop_continuous_scanner
+        await stop_continuous_scanner()
+        logger.info("continuous_scanner_stopped")
+    except Exception as e:
+        logger.warning("continuous_scanner_stop_failed", error=str(e))
+
     await close_db()
     logger.info("database_closed")
 
@@ -202,13 +248,91 @@ async def lifespan(app: FastAPI):
 # FastAPI Application
 # =============================================================================
 
+API_DESCRIPTION = """
+# BREACH.AI Enterprise API
+
+**Autonomous Security Assessment Engine**
+
+## Overview
+
+BREACH.AI provides automated security testing and vulnerability assessment capabilities through a comprehensive REST API.
+
+## Key Features
+
+- **Scan Management**: Create, monitor, and manage security scans
+- **Target Management**: Define and organize scan targets
+- **Findings**: View and manage discovered vulnerabilities
+- **Learning Engine**: AI-powered learning from past scans
+- **Analytics**: Trend analysis, comparisons, and reporting
+- **Integrations**: Slack, GitHub, Jira, webhooks
+- **Attestations**: Security posture reports and compliance badges
+
+## Authentication
+
+All API endpoints require authentication via JWT token or API key:
+
+```
+Authorization: Bearer <token>
+```
+
+or
+
+```
+X-API-Key: breach_xxxxxxxxxxxx
+```
+
+## Rate Limiting
+
+- Global: 100 requests/minute per organization
+- Scan creation: 10 requests/minute
+- Auth endpoints: 5 requests/minute
+
+## WebSocket
+
+Real-time scan updates are available via WebSocket:
+
+```
+ws://localhost:8000/ws/scans/{scan_id}
+```
+
+## Support
+
+- Documentation: https://docs.breach.ai
+- Issues: https://github.com/breach-ai/breach/issues
+"""
+
+API_TAGS = [
+    {"name": "Health", "description": "Health check and status endpoints"},
+    {"name": "Auth", "description": "Authentication and user management"},
+    {"name": "Scans", "description": "Security scan management"},
+    {"name": "Targets", "description": "Target configuration"},
+    {"name": "Findings", "description": "Vulnerability findings"},
+    {"name": "Learning Engine", "description": "AI learning and optimization"},
+    {"name": "Analytics", "description": "Trends, comparisons, and reporting"},
+    {"name": "Recommendations", "description": "Remediation guidance"},
+    {"name": "Integrations", "description": "External service integrations"},
+    {"name": "Attestations", "description": "Security posture and compliance"},
+    {"name": "Billing", "description": "Subscription and billing management"},
+    {"name": "Monitoring", "description": "Prometheus metrics and observability"},
+]
+
 app = FastAPI(
     title="BREACH.AI Enterprise",
-    description="Autonomous Security Assessment Engine - Enterprise API",
+    description=API_DESCRIPTION,
     version="4.0.0",
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
+    openapi_tags=API_TAGS,
+    contact={
+        "name": "BREACH.AI Support",
+        "url": "https://breach.ai/support",
+        "email": "support@breach.ai",
+    },
+    license_info={
+        "name": "Proprietary",
+        "url": "https://breach.ai/license",
+    },
 )
 
 # Add rate limiting
@@ -227,6 +351,47 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Request-ID"],
 )
+
+
+# =============================================================================
+# Organization Context Middleware (for per-org rate limiting)
+# =============================================================================
+
+@app.middleware("http")
+async def org_context_middleware(request: Request, call_next):
+    """
+    Extract organization context for rate limiting.
+    This middleware runs early to set request.state.organization_id
+    which is then used by the rate limiter.
+    """
+    import hashlib
+
+    # Initialize state
+    if not hasattr(request.state, "organization_id"):
+        request.state.organization_id = None
+
+    # Try to extract org from API key (faster than full auth)
+    api_key = request.headers.get("X-API-Key", "")
+    if api_key:
+        try:
+            key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+            async with async_session() as session:
+                from sqlalchemy import select
+                from backend.db.models import APIKey
+                result = await session.execute(
+                    select(APIKey.organization_id).where(
+                        APIKey.key_hash == key_hash,
+                        APIKey.is_active == True
+                    )
+                )
+                row = result.first()
+                if row:
+                    request.state.organization_id = str(row[0])
+        except Exception as e:
+            logger.debug("org_context_extraction_failed", error=str(e))
+
+    response = await call_next(request)
+    return response
 
 
 # =============================================================================
@@ -365,6 +530,27 @@ app.include_router(auth_router, prefix="/api/v1")
 app.include_router(scans_router, prefix="/api/v1")
 app.include_router(targets_router, prefix="/api/v1")
 app.include_router(billing_router, prefix="/api/v1")
+app.include_router(assessments_router, prefix="/api/v1")
+app.include_router(schedules_router, prefix="/api/v1")
+app.include_router(integrations_router, prefix="/api/v1")
+app.include_router(attestations_router, prefix="/api/v1")
+app.include_router(learning_router, prefix="/api/v1")
+app.include_router(recommendations_router, prefix="/api/v1")
+app.include_router(analytics_router, prefix="/api/v1")
+
+# V2 Breach API
+app.include_router(breaches_router)
+
+# =============================================================================
+# Abuse Detection Middleware (Optional)
+# =============================================================================
+
+try:
+    from backend.api.middleware.abuse import setup_abuse_middleware
+    setup_abuse_middleware(app)
+    logger.info("abuse_detection_middleware_enabled")
+except ImportError:
+    logger.info("abuse_detection_middleware_not_available")
 
 
 # =============================================================================
@@ -403,6 +589,17 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+
+
+async def broadcast_scan_progress(scan_id: str, message: dict):
+    """Broadcast scan progress to all connected clients."""
+    await manager.broadcast(scan_id, message)
+
+
+# Export for use by scan service
+def get_ws_manager() -> ConnectionManager:
+    """Get the WebSocket connection manager."""
+    return manager
 
 
 @app.websocket("/ws/scans/{scan_id}")

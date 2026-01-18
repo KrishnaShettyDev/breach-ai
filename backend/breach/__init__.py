@@ -13,10 +13,39 @@ Modules:
 - core: Core engine components (memory, scheduler, agent)
 - attacks: Attack modules (IDOR, SQLi, XSS, Auth bypass, etc.)
 - recon: Reconnaissance modules (DNS, ports, web fingerprinting)
+- modules: V2 killchain modules (61 total attack modules)
 - agents: AI brain and decision-making engines
 - utils: HTTP client, helpers, logging
 - report: Report generation
+- recommendations: Fix recommendations database (45+ vulnerability types)
+
+Quick Start:
+------------
+    from backend.breach import BrutalAssessment, run_brutal_assessment
+
+    # Run a complete security assessment
+    results = await run_brutal_assessment("https://target.com")
+
+CLI Usage:
+----------
+    breach assess https://target.com --brutal --output ./reports
 """
 
-__version__ = "4.0.0"
+__version__ = "5.0.0"
 __author__ = "BREACH.AI"
+
+# Main exports
+from backend.breach.brutal_assessment import (
+    BrutalAssessment,
+    AssessmentResults,
+    Finding,
+    run_brutal_assessment,
+)
+
+__all__ = [
+    "BrutalAssessment",
+    "AssessmentResults",
+    "Finding",
+    "run_brutal_assessment",
+    "__version__",
+]

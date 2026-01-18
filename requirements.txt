@@ -22,6 +22,11 @@ rich>=13.0.0
 # Templating (Reports)
 jinja2>=3.1.0
 
+# PDF Generation (optional - install one of these)
+# weasyprint>=60.0      # Best quality, requires system deps
+# xhtml2pdf>=0.2.11     # Pure Python, easier install
+reportlab>=4.0.0       # Direct PDF generation
+
 # Utilities
 python-dateutil>=2.8.0
 
@@ -60,6 +65,18 @@ pydantic-settings>=2.0.0
 
 # Job Queue
 arq>=0.26.0
+
+# Scheduling
+croniter>=2.0.0          # Cron expression parsing
+
+# Vector Database
+qdrant-client>=1.7.0
+
+# Cloud Storage (Cloudflare R2 / S3)
+aioboto3>=12.0.0
+
+# Environment
+python-dotenv>=1.0.0
 
 # Observability
 structlog>=24.0.0

@@ -15,7 +15,8 @@ class TestScanEndpoints:
 
     @pytest.mark.asyncio
     async def test_create_scan(self, authenticated_client: AsyncClient):
-        """Test creating a new scan."""
+        """Test creating a scan requires a verified target."""
+        # API now requires a target_id for security reasons
         response = await authenticated_client.post(
             "/api/v1/scans",
             json={
@@ -23,11 +24,10 @@ class TestScanEndpoints:
                 "mode": "normal"
             }
         )
-        assert response.status_code == 201
+        # Should return 400 because target_id is required
+        assert response.status_code == 400
         data = response.json()
-        assert data["target_url"] == "https://example.com/"
-        assert data["mode"] == "normal"
-        assert data["status"] == "pending"
+        assert "target" in data["error"].lower()
 
     @pytest.mark.asyncio
     async def test_create_scan_ssrf_blocked(self, authenticated_client: AsyncClient):

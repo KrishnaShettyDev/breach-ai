@@ -7,13 +7,19 @@
 ██████╔╝██║  ██║███████╗██║  ██║╚██████╗██║  ██║    ██║  ██║██║
 ╚═════╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝    ╚═╝  ╚═╝╚═╝
 
-THE ONE ENGINE - All attacks consolidated
+THE ONE ENGINE - V1 + V2 Unified
+
+Modes:
+    quick       - Fast SaaS attacks only (default)
+    deep        - Quick + full injection suite
+    chainbreaker - Full 7-phase kill chain with AI orchestration
 
 Usage:
     python breach.py https://target.com
     python breach.py https://target.com --cookie "session=xxx"
     python breach.py https://target.com --cookie1 "u1=x" --cookie2 "u2=y"  # IDOR
     python breach.py https://target.com --deep --output report.json
+    python breach.py https://target.com --chainbreaker --timeout 2  # V2 Kill Chain
 """
 
 import asyncio, aiohttp, json, sys, os, re, time, base64, hashlib, hmac
@@ -443,21 +449,111 @@ class JWTAttack(AttackModule):
             except: pass
         return self.findings
 
+class ScanMode(Enum):
+    QUICK = "quick"           # V1 SaaS attacks only
+    DEEP = "deep"             # V1 + full injection suite
+    CHAINBREAKER = "chainbreaker"  # V2 7-phase kill chain
+
+
 class BreachEngine:
-    def __init__(self, deep_mode=False):
-        self.deep_mode = deep_mode
+    """
+    THE UNIFIED ENGINE - V1 + V2 Combined
+
+    Modes:
+        quick       - Fast SaaS attacks (Supabase RLS, auth bypass, IDOR, etc.)
+        deep        - Quick + full injection suite (SQLi, XSS, SSRF, etc.)
+        chainbreaker - Full 7-phase AI-driven kill chain
+
+    Features:
+        - Learning Engine integration (gets smarter with every scan)
+        - Integration hooks (Slack, Jira, webhooks)
+        - Attack prioritization based on tech stack
+    """
+
+    def __init__(self, mode: str = "quick", deep_mode: bool = False, timeout_hours: int = 1):
+        # Handle legacy deep_mode parameter
+        if deep_mode and mode == "quick":
+            mode = "deep"
+
+        self.mode = ScanMode(mode) if isinstance(mode, str) else mode
+        self.deep_mode = self.mode in [ScanMode.DEEP, ScanMode.CHAINBREAKER]
+        self.chainbreaker_mode = self.mode == ScanMode.CHAINBREAKER
+        self.timeout_hours = timeout_hours
         self.session = None
         self.state = None
         self.start_time = 0
 
+        # Learning engine integration
+        self._learning_engine = None
+        self._detected_tech = []
+        self._detected_waf = ""
+
+        # Integration callbacks
+        self._on_finding_callbacks = []
+        self._on_complete_callbacks = []
+
+    def _init_learning_engine(self):
+        """Initialize the learning engine (lazy loading)."""
+        if self._learning_engine is None:
+            try:
+                from backend.breach.core.learning_engine import get_learning_engine
+                self._learning_engine = get_learning_engine()
+                console.print(f"[dim]🧠 Learning Engine: {self._learning_engine.data.total_attacks} past attacks loaded[/dim]")
+            except Exception as e:
+                console.print(f"[dim]Learning engine not available: {e}[/dim]")
+        return self._learning_engine
+
+    def on_finding(self, callback):
+        """Register callback for when a finding is discovered."""
+        self._on_finding_callbacks.append(callback)
+
+    def on_complete(self, callback):
+        """Register callback for when scan completes."""
+        self._on_complete_callbacks.append(callback)
+
+    async def _fire_finding(self, finding):
+        """Fire finding callbacks."""
+        for cb in self._on_finding_callbacks:
+            try:
+                if asyncio.iscoroutinefunction(cb):
+                    await cb(finding)
+                else:
+                    cb(finding)
+            except Exception as e:
+                console.print(f"[dim]Callback error: {e}[/dim]")
+
+    async def _fire_complete(self, state):
+        """Fire completion callbacks."""
+        for cb in self._on_complete_callbacks:
+            try:
+                if asyncio.iscoroutinefunction(cb):
+                    await cb(state)
+                else:
+                    cb(state)
+            except Exception as e:
+                console.print(f"[dim]Callback error: {e}[/dim]")
+
     async def __aenter__(self):
-        self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), headers={'User-Agent': 'BREACH.AI/1.0'})
+        self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), headers={'User-Agent': 'BREACH.AI/4.0'})
         return self
 
     async def __aexit__(self, *args):
         if self.session: await self.session.close()
+        # Save learning data
+        if self._learning_engine:
+            self._learning_engine.save()
 
-    async def breach(self, target, cookie=None, cookie2=None, token=None):
+    async def breach(self, target, cookie=None, cookie2=None, token=None, scope=None):
+        """
+        Run the breach assessment.
+
+        Args:
+            target: Target URL
+            cookie: Session cookie for user 1
+            cookie2: Session cookie for user 2 (for IDOR testing)
+            token: Bearer token (alternative auth)
+            scope: List of in-scope domains (for chainbreaker mode)
+        """
         self.start_time = time.time()
         if not target.startswith('http'): target = f'https://{target}'
         self.state = ScanState(target=target)
@@ -465,17 +561,105 @@ class BreachEngine:
         cookies2 = self._parse(cookie2)
         self._banner(target, bool(cookies), bool(cookies2))
 
+        # Initialize learning engine
+        learning = self._init_learning_engine()
+
+        # ========== CHAINBREAKER MODE (V2 Kill Chain) ==========
+        if self.chainbreaker_mode:
+            console.print(f"\n[bold magenta]═══════════════════════════════════════════════════════════════════════[/bold magenta]")
+            console.print(f"[bold magenta]  CHAINBREAKER MODE - 7-Phase Kill Chain with AI Orchestration[/bold magenta]")
+            console.print(f"[bold magenta]═══════════════════════════════════════════════════════════════════════[/bold magenta]")
+
+            try:
+                from backend.breach.core.orchestrator import KillChainOrchestrator
+
+                # Create orchestrator with our HTTP session
+                orchestrator = KillChainOrchestrator(http_client=self.session)
+
+                # Run the full kill chain
+                breach_session = await orchestrator.run_breach(
+                    target=target,
+                    timeout_hours=self.timeout_hours,
+                    scope=scope or [target],
+                    rules={
+                        "cookies": cookies,
+                        "cookies2": cookies2,
+                        "token": token,
+                    }
+                )
+
+                # Convert V2 findings to V1 format for compatibility
+                self._convert_v2_findings(breach_session)
+
+                # Learn from the V2 session
+                if learning and breach_session:
+                    self._learn_from_v2_session(learning, breach_session)
+
+                console.print(f"\n[bold green]Kill Chain Complete![/bold green]")
+                console.print(f"  Access Level: {breach_session.highest_access.value}")
+                console.print(f"  Evidence Items: {len(breach_session.evidence_collected)}")
+                console.print(f"  Systems Compromised: {len(breach_session.systems_compromised)}")
+
+            except Exception as e:
+                console.print(f"[red]Kill Chain failed: {e}[/red]")
+                import traceback
+                traceback.print_exc()
+                # Fall back to standard mode
+                console.print(f"\n[yellow]Falling back to standard deep mode...[/yellow]")
+                await self._run_standard_scan(cookies, cookies2, learning)
+        else:
+            # ========== STANDARD MODE (V1) ==========
+            await self._run_standard_scan(cookies, cookies2, learning)
+
+        # Fire completion callbacks
+        await self._fire_complete(self.state)
+
+        self._report()
+        return self.state
+
+    async def _run_standard_scan(self, cookies, cookies2, learning):
+        """Run standard V1 scan flow."""
         console.print(f"\n[bold cyan]▶ PHASE 1: FINGERPRINT[/bold cyan]")
-        self.state.fingerprint = await StackDetector.detect(self.session, target)
+        self.state.fingerprint = await StackDetector.detect(self.session, self.state.target)
         self._show_fp()
+
+        # Extract detected technologies for learning
+        self._detected_tech = self._extract_tech_list()
+
+        # Get attack prioritization from learning engine
+        attack_order = None
+        if learning and self._detected_tech:
+            try:
+                predictions = learning.predict_vulnerabilities(self._detected_tech)
+                if predictions:
+                    console.print(f"[dim]🧠 Predicted vulns: {', '.join(p['vulnerability'] for p in predictions[:3])}[/dim]")
+            except Exception as e:
+                console.print(f"[dim]Prediction failed: {e}[/dim]")
 
         console.print(f"\n[bold cyan]▶ PHASE 2: RECON[/bold cyan]")
         await self._recon(cookies)
 
         console.print(f"\n[bold cyan]▶ PHASE 3: SAAS ATTACKS[/bold cyan]")
-        for Mod in [SupabaseRLSAttack, AuthBypassAttack, PaymentBypassAttack, IDORAttack, TwoUserIDORAttack, LogInjectionAttack, InfoDisclosureAttack, GraphQLAttack, JWTAttack]:
-            try: await Mod(self.session, self.state).run(cookies, cookies2)
-            except Exception as e: console.print(f"[dim]  {Mod.__name__}: {e}[/dim]")
+        attack_modules = [SupabaseRLSAttack, AuthBypassAttack, PaymentBypassAttack, IDORAttack, TwoUserIDORAttack, LogInjectionAttack, InfoDisclosureAttack, GraphQLAttack, JWTAttack]
+
+        for Mod in attack_modules:
+            try:
+                module = Mod(self.session, self.state)
+                findings_before = len(self.state.findings)
+                await module.run(cookies, cookies2)
+                findings_after = len(self.state.findings)
+
+                # Learn from this attack
+                if learning:
+                    success = findings_after > findings_before
+                    self._learn_from_attack(learning, Mod.__name__, success)
+
+                # Fire callbacks for new findings
+                for finding in self.state.findings[findings_before:]:
+                    await self._fire_finding(finding)
+
+            except Exception as e:
+                console.print(f"[dim]  {Mod.__name__}: {e}[/dim]")
 
         # PHASE 4: Full injection attack suite (SQLi, XSS, SSRF, NoSQL, etc.)
         if self.deep_mode:
@@ -483,14 +667,101 @@ class BreachEngine:
             try:
                 from backend.breach.attacks.orchestrator import AttackOrchestrator
                 orchestrator = AttackOrchestrator(self.session, self.state)
+                findings_before = len(self.state.findings)
                 await orchestrator.run(cookies, cookies2)
+
+                # Fire callbacks for new findings
+                for finding in self.state.findings[findings_before:]:
+                    await self._fire_finding(finding)
+
             except Exception as e:
                 console.print(f"[dim]  Injection attacks failed: {e}[/dim]")
                 import traceback
                 traceback.print_exc()
 
-        self._report()
-        return self.state
+    def _extract_tech_list(self) -> List[str]:
+        """Extract technology list from fingerprint."""
+        tech = []
+        fp = self.state.fingerprint
+        if fp.framework: tech.append(fp.framework)
+        if fp.auth_provider: tech.append(fp.auth_provider)
+        if fp.database: tech.append(fp.database)
+        if fp.payment_provider: tech.append(fp.payment_provider)
+        if fp.hosting: tech.append(fp.hosting)
+        return tech
+
+    def _learn_from_attack(self, learning, attack_name: str, success: bool):
+        """Learn from an attack attempt."""
+        try:
+            learning.learn_from_attack(
+                attack_type=attack_name,
+                payload="",  # We don't track individual payloads at this level
+                target=self.state.target,
+                target_tech=self._detected_tech,
+                success=success,
+                waf_type=self._detected_waf,
+            )
+        except Exception as e:
+            console.print(f"[dim]Learning failed: {e}[/dim]")
+
+    def _convert_v2_findings(self, breach_session):
+        """Convert V2 BreachSession findings to V1 Finding format."""
+        try:
+            from backend.breach.core.killchain import EvidenceType
+
+            for evidence in breach_session.evidence_collected:
+                # Map evidence type to severity
+                severity_map = {
+                    EvidenceType.DATA_SAMPLE: Severity.CRITICAL,
+                    EvidenceType.CREDENTIAL: Severity.CRITICAL,
+                    EvidenceType.ACCESS_PROOF: Severity.HIGH,
+                    EvidenceType.SCREENSHOT: Severity.MEDIUM,
+                    EvidenceType.LOG_ENTRY: Severity.LOW,
+                    EvidenceType.COMMAND_OUTPUT: Severity.MEDIUM,
+                }
+                severity = severity_map.get(evidence.type, Severity.MEDIUM)
+
+                finding = Finding(
+                    severity=severity,
+                    category=f"killchain_{evidence.phase.value}" if evidence.phase else "killchain",
+                    title=evidence.description or f"Evidence: {evidence.type.value}",
+                    description=f"Kill chain evidence from phase: {evidence.phase.display_name if evidence.phase else 'unknown'}",
+                    endpoint=evidence.source or self.state.target,
+                    method="GET",
+                    evidence=evidence.data,
+                    business_impact=50000 if severity == Severity.CRITICAL else 15000,
+                    impact_explanation="Kill chain breach evidence",
+                )
+                self.state.findings.append(finding)
+        except Exception as e:
+            console.print(f"[dim]V2 conversion failed: {e}[/dim]")
+
+    def _learn_from_v2_session(self, learning, breach_session):
+        """Learn from a V2 kill chain session."""
+        try:
+            # Learn from each successful step
+            for step in breach_session.get_successful_steps():
+                learning.learn_from_attack(
+                    attack_type=step.module_name,
+                    payload=step.action,
+                    target=self.state.target,
+                    target_tech=self._detected_tech,
+                    success=True,
+                    impact=f"access_{breach_session.highest_access.value}",
+                )
+
+            # Learn from evidence as vulnerabilities
+            for evidence in breach_session.evidence_collected:
+                learning.learn_from_vulnerability(
+                    vuln_type=f"killchain_{evidence.type.value}" if hasattr(evidence, 'type') else "killchain_evidence",
+                    target=self.state.target,
+                    target_tech=self._detected_tech,
+                    severity="critical" if breach_session.breach_achieved else "high",
+                )
+
+            learning.save()
+        except Exception as e:
+            console.print(f"[dim]V2 learning failed: {e}[/dim]")
 
     def _parse(self, c):
         if not c: return {}
@@ -519,8 +790,16 @@ class BreachEngine:
         console.print(f"[dim]  {len(self.state.extracted_ids)} IDs extracted[/dim]")
 
     def _banner(self, target, c1, c2):
-        mode = "Two-User IDOR" if c2 else ("Auth" if c1 else "Unauth")
-        console.print(Panel.fit(f"[bold red]BREACH.AI[/bold red]\n[dim]THE ONE ENGINE[/dim]\n\nTarget: {target}\nMode: {mode}", border_style="red"))
+        auth_mode = "Two-User IDOR" if c2 else ("Auth" if c1 else "Unauth")
+        scan_mode = self.mode.value.upper()
+        mode_color = {"QUICK": "cyan", "DEEP": "yellow", "CHAINBREAKER": "magenta"}[scan_mode]
+        console.print(Panel.fit(
+            f"[bold red]BREACH.AI[/bold red]\n[dim]THE UNIFIED ENGINE (V1 + V2)[/dim]\n\n"
+            f"Target: {target}\n"
+            f"Auth: {auth_mode}\n"
+            f"Mode: [{mode_color}]{scan_mode}[/{mode_color}]",
+            border_style="red"
+        ))
 
     def _show_fp(self):
         fp = self.state.fingerprint
@@ -574,15 +853,27 @@ class BreachEngine:
 
 async def main():
     import argparse
-    p = argparse.ArgumentParser(description='BREACH.AI - THE ONE ENGINE')
+    p = argparse.ArgumentParser(description='BREACH.AI - THE UNIFIED ENGINE (V1 + V2)')
     p.add_argument('target', help='Target URL')
     p.add_argument('--cookie', '--cookie1', dest='cookie', help='Cookie 1')
     p.add_argument('--cookie2', help='Cookie 2 (IDOR)')
     p.add_argument('--token', help='Bearer token')
-    p.add_argument('--deep', action='store_true')
+    p.add_argument('--mode', choices=['quick', 'deep', 'chainbreaker'], default='quick',
+                   help='Scan mode: quick (V1 SaaS), deep (V1+injections), chainbreaker (V2 kill chain)')
+    p.add_argument('--deep', action='store_true', help='Shortcut for --mode deep')
+    p.add_argument('--chainbreaker', action='store_true', help='Shortcut for --mode chainbreaker')
+    p.add_argument('--timeout', type=int, default=1, help='Timeout in hours (for chainbreaker mode)')
     p.add_argument('--output', '-o', help='JSON output')
     args = p.parse_args()
-    async with BreachEngine(args.deep) as e:
+
+    # Determine mode
+    mode = args.mode
+    if args.chainbreaker:
+        mode = 'chainbreaker'
+    elif args.deep:
+        mode = 'deep'
+
+    async with BreachEngine(mode=mode, timeout_hours=args.timeout) as e:
         await e.breach(args.target, args.cookie, args.cookie2, args.token)
         if args.output:
             open(args.output, 'w').write(e.json_report())

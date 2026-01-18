@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from httpx import AsyncClient
+from httpx import AsyncClient, ASGITransport
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -24,6 +24,7 @@ os.environ["STRIPE_SECRET_KEY"] = "test_stripe_secret_key_12345"
 os.environ["CORS_ORIGINS"] = "http://localhost:3000"
 os.environ["ENVIRONMENT"] = "test"
 os.environ["DEBUG"] = "true"
+os.environ["REDIS_URL"] = ""  # Disable Redis for tests (use in-memory rate limiting)
 
 from backend.db.database import Base
 from backend.db.models import User, Organization, OrganizationMember, UserRole, Scan, ScanStatus, ScanMode
@@ -172,7 +173,9 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
 
     app.dependency_overrides[get_db] = override_get_db
 
-    async with AsyncClient(app=app, base_url="http://test") as ac:
+    # Use ASGITransport for newer httpx versions
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
 
     app.dependency_overrides.clear()

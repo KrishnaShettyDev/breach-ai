@@ -374,6 +374,82 @@ class AttackEngine:
         except ImportError:
             pass
 
+        # === CORS EXPLOITER ===
+        try:
+            from backend.breach.attacks.cors_exploiter import CORSExploiter
+            self.register_attack("cors", CORSExploiter)
+            self.register_attack("cors_attack", CORSExploiter)
+        except ImportError:
+            pass
+
+        # === XXE DESTROYER ===
+        try:
+            from backend.breach.attacks.xxe_destroyer import XXEDestroyer
+            self.register_attack("xxe", XXEDestroyer)
+            self.register_attack("xxe_attack", XXEDestroyer)
+            self.register_attack("xml", XXEDestroyer)
+        except ImportError:
+            pass
+
+        # === SSTI EXPLOITER ===
+        try:
+            from backend.breach.attacks.ssti_exploiter import SSTIExploiter
+            self.register_attack("ssti_exploiter", SSTIExploiter)
+            self.register_attack("template_injection", SSTIExploiter)
+        except ImportError:
+            pass
+
+        # === REQUEST SMUGGLER ===
+        try:
+            from backend.breach.attacks.request_smuggler import RequestSmuggler
+            self.register_attack("request_smuggling", RequestSmuggler)
+            self.register_attack("smuggling", RequestSmuggler)
+            self.register_attack("http_smuggling", RequestSmuggler)
+        except ImportError:
+            pass
+
+        # === CACHE POISONER ===
+        try:
+            from backend.breach.attacks.cache_poisoner import CachePoisoner
+            self.register_attack("cache_poisoning", CachePoisoner)
+            self.register_attack("cache", CachePoisoner)
+            self.register_attack("web_cache", CachePoisoner)
+        except ImportError:
+            pass
+
+        # === SUBDOMAIN TAKEOVER ===
+        try:
+            from backend.breach.attacks.subdomain_takeover import SubdomainTakeover
+            self.register_attack("subdomain_takeover", SubdomainTakeover)
+            self.register_attack("takeover", SubdomainTakeover)
+        except ImportError:
+            pass
+
+        # === RATE LIMIT BYPASS ===
+        try:
+            from backend.breach.attacks.rate_limit_bypass import RateLimitBypass
+            self.register_attack("rate_limit", RateLimitBypass)
+            self.register_attack("rate_limit_bypass", RateLimitBypass)
+            self.register_attack("brute_force", RateLimitBypass)
+        except ImportError:
+            pass
+
+        # === PROTOTYPE POLLUTION ===
+        try:
+            from backend.breach.attacks.prototype_pollution import PrototypePollution
+            self.register_attack("prototype", PrototypePollution)
+            self.register_attack("pollution", PrototypePollution)
+        except ImportError:
+            pass
+
+        # === HOST HEADER INJECTION ===
+        try:
+            from backend.breach.attacks.host_header_injection import HostHeaderInjection
+            self.register_attack("host_header", HostHeaderInjection)
+            self.register_attack("host_injection", HostHeaderInjection)
+        except ImportError:
+            pass
+
     def get_lol_techniques(self, os_type: str = "linux") -> list:
         """Get Living Off The Land techniques."""
         if not self._lol_module:
