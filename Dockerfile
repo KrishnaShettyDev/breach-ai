@@ -46,6 +46,7 @@ RUN useradd -m -u 1000 breach && \
 COPY --chown=breach:breach backend/ ./backend/
 COPY --chown=breach:breach alembic/ ./alembic/
 COPY --chown=breach:breach alembic.ini .
+COPY --chown=breach:breach main.py .
 
 # Switch to non-root user
 USER breach
@@ -57,5 +58,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Run the application
-CMD ["python", "-m", "uvicorn", "backend.api.server:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the application (use PORT env var for Railway)
+CMD python -m uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
