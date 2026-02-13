@@ -544,13 +544,20 @@ def doctor():
     py_ok = sys.version_info >= (3, 11)
     checks.append(("Python >= 3.11", py_version, py_ok))
 
-    # Core dependencies
-    for pkg in ["aiohttp", "rich", "typer", "pydantic", "beautifulsoup4"]:
+    # Core dependencies (package_name, import_name)
+    deps = [
+        ("aiohttp", "aiohttp"),
+        ("rich", "rich"),
+        ("typer", "typer"),
+        ("pydantic", "pydantic"),
+        ("beautifulsoup4", "bs4"),
+    ]
+    for pkg_name, import_name in deps:
         try:
-            __import__(pkg.replace("-", "_"))
-            checks.append((pkg, "installed", True))
+            __import__(import_name)
+            checks.append((pkg_name, "installed", True))
         except ImportError:
-            checks.append((pkg, "missing", False))
+            checks.append((pkg_name, "missing", False))
 
     # Optional: AI
     try:
