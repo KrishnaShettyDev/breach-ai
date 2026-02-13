@@ -1,0 +1,57 @@
+# BREACH v3.0 - Docker Compose Configuration
+# Shannon-Style Autonomous Pentester
+
+version: '3.8'
+
+services:
+  breach:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: breach
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - BREACH_OUTPUT_DIR=/app/audit-logs
+    volumes:
+      # Output directory for reports
+      - ./audit-logs:/app/audit-logs
+      # Configuration files
+      - ./configs:/app/configs
+      # Source code repositories for white-box testing
+      - ./repos:/app/repos
+    # Network mode for accessing local targets
+    # Use 'host' if testing local applications
+    network_mode: bridge
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G
+
+  # Optional: Redis for caching (future feature)
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: breach-redis
+  #   ports:
+  #     - "6379:6379"
+
+  # Optional: Temporal for enterprise workflow orchestration
+  # Uncomment for Temporal integration
+  # temporal:
+  #   image: temporalio/auto-setup:latest
+  #   container_name: breach-temporal
+  #   ports:
+  #     - "7233:7233"  # gRPC
+  #     - "8233:8233"  # Web UI
+  #   environment:
+  #     - DB=postgresql
+  #     - DB_PORT=5432
+  #     - POSTGRES_USER=temporal
+  #     - POSTGRES_PWD=temporal
+  #     - POSTGRES_SEEDS=postgres
+
+networks:
+  default:
+    name: breach-network

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "breach-ai"
-version = "2.0.0"
+version = "3.0.0"
 description = "Autonomous security scanner with proof-by-exploitation"
 readme = "README.md"
 license = {text = "AGPL-3.0"}

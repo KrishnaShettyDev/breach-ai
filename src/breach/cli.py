@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
 """
-BREACH.AI CLI
-=============
+BREACH v3.0 CLI
+================
 
-Autonomous security scanner with proof-by-exploitation.
+Shannon-Style Autonomous Security Scanner
 
 Usage:
-    breach <target>                          # Quick scan
-    breach <target> --mode deep              # Comprehensive scan
-    breach <target> --mode proven            # Only report exploited vulns
-    breach <target> --mode chaos             # All 60+ modules
+    breach <target>                    # Full 4-phase scan
+    breach <target> --repo ./myapp     # White-box with source
+    breach <target> --no-browser       # Skip browser validation
 
 Examples:
     breach https://example.com
-    breach https://example.com --mode proven --browser
-    breach https://example.com --cookie "session=xxx" -o report.json
-    breach https://example.com --ai --mode chaos
+    breach https://example.com --repo ./repos/myapp --ai
+    breach https://example.com -o ./reports
 """
 
 import asyncio
@@ -33,47 +31,29 @@ from rich.table import Table
 from rich import box
 
 # Version
-__version__ = "2.0.0"
+__version__ = "3.0.0"
 
 # Initialize
 app = typer.Typer(
     name="breach",
-    help="BREACH.AI - Autonomous Security Scanner",
+    help="BREACH v3.0 - Shannon-Style Autonomous Security Scanner",
     add_completion=True,
     rich_markup_mode="rich",
 )
 console = Console()
 
-# Project root for .env loading
+# Project root
 PROJECT_ROOT = Path(__file__).parent.parent
 
 
-class ScanMode(str, Enum):
-    """Scan modes."""
-    quick = "quick"
-    deep = "deep"
-    proven = "proven"
-    chaos = "chaos"
-
-
-class OutputFormat(str, Enum):
-    """Output formats."""
-    json = "json"
-    md = "md"
-    html = "html"
-
-
-# ============== UTILITY FUNCTIONS ==============
-
 def load_env():
-    """Load .env file from project root."""
+    """Load .env file."""
     env_file = PROJECT_ROOT / ".env"
     if env_file.exists():
         try:
             from dotenv import load_dotenv
             load_dotenv(env_file)
         except ImportError:
-            # Manual parsing fallback
             with open(env_file) as f:
                 for line in f:
                     line = line.strip()
@@ -83,7 +63,7 @@ def load_env():
 
 
 def print_banner():
-    """Print the BREACH.AI banner."""
+    """Print BREACH banner."""
     banner = """
 [bold red]
  ██████╗ ██████╗ ███████╗ █████╗  ██████╗██╗  ██╗
@@ -93,41 +73,26 @@ def print_banner():
  ██████╔╝██║  ██║███████╗██║  ██║╚██████╗██║  ██║
  ╚═════╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝
 [/bold red]
-[bold white]      Autonomous Security Scanner v{version}[/bold white]
-[dim]      pip install breach-ai[full][/dim]
+[bold yellow]      Shannon-Style Autonomous Pentester v{version}[/bold yellow]
+[bold white]           NO EXPLOIT, NO REPORT[/bold white]
 """.format(version=__version__)
     console.print(banner)
 
 
 def verify_ownership(target: str, skip: bool = False) -> bool:
-    """Verify ownership before scanning."""
+    """Verify target ownership."""
     if skip:
         return True
 
-    console.print("\n[yellow][!] DOMAIN OWNERSHIP VERIFICATION[/yellow]")
-    console.print(f"\nYou are about to scan: [bold]{target}[/bold]")
-    console.print("\nBy proceeding, you confirm that:")
-    console.print("  1. You own this domain/application, OR")
-    console.print("  2. You have explicit written permission to test it")
-    console.print("\n[red]Unauthorized scanning is illegal and unethical.[/red]\n")
+    console.print("\n[yellow][!] AUTHORIZATION REQUIRED[/yellow]")
+    console.print(f"\nTarget: [bold]{target}[/bold]")
+    console.print("\nBy proceeding, you confirm:")
+    console.print("  1. You OWN this application, OR")
+    console.print("  2. You have WRITTEN authorization to test it")
+    console.print("\n[red]Unauthorized testing is illegal.[/red]\n")
 
     response = typer.prompt("Type 'I CONFIRM' to proceed")
     return response.strip() == "I CONFIRM"
-
-
-def get_output_path(output: Optional[str], target: str, format: OutputFormat) -> Path:
-    """Generate output path."""
-    if output:
-        path = Path(output)
-        if path.suffix:
-            return path
-        return path.with_suffix(f".{format.value}")
-
-    # Auto-generate filename
-    from urllib.parse import urlparse
-    domain = urlparse(target).netloc.replace(":", "_")
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return Path(f"breach_{domain}_{timestamp}.{format.value}")
 
 
 # ============== MAIN SCAN COMMAND ==============
@@ -135,169 +100,110 @@ def get_output_path(output: Optional[str], target: str, format: OutputFormat) ->
 @app.command()
 def scan(
     target: str = typer.Argument(..., help="Target URL to scan"),
-    mode: ScanMode = typer.Option(
-        ScanMode.quick,
-        "--mode", "-m",
-        help="Scan mode: quick, deep, proven (exploitation-validated), chaos (all modules)"
+    repo: Optional[Path] = typer.Option(
+        None, "--repo", "-r",
+        help="Path to source code repository (enables white-box testing)"
     ),
     cookie: Optional[str] = typer.Option(
         None, "--cookie", "-c",
         help="Session cookie for authenticated scanning"
     ),
-    cookie2: Optional[str] = typer.Option(
-        None, "--cookie2",
-        help="Second user cookie for IDOR testing"
+    output: Optional[Path] = typer.Option(
+        Path("./audit-logs"), "--output", "-o",
+        help="Output directory for reports"
     ),
-    token: Optional[str] = typer.Option(
-        None, "--token", "-t",
-        help="Bearer token for API authentication"
+    ai: bool = typer.Option(
+        True, "--ai/--no-ai",
+        help="Enable AI-enhanced scanning"
     ),
-    header: Optional[List[str]] = typer.Option(
-        None, "--header", "-H",
-        help="Custom headers (can be used multiple times)"
+    browser: bool = typer.Option(
+        True, "--browser/--no-browser",
+        help="Enable browser validation (required for XSS)"
     ),
-    output: Optional[str] = typer.Option(
-        None, "--output", "-o",
-        help="Output file path (format detected from extension)"
-    ),
-    output_format: OutputFormat = typer.Option(
-        OutputFormat.json, "--format", "-f",
-        help="Output format when -o is a directory"
-    ),
-    json_stdout: bool = typer.Option(
-        False, "--json",
-        help="Output JSON to stdout (for piping)"
-    ),
-    timeout: int = typer.Option(
-        30, "--timeout",
-        help="Timeout in minutes"
-    ),
-    rate_limit: int = typer.Option(
-        50, "--rate-limit",
-        help="Max requests per second"
+    max_pages: int = typer.Option(
+        100, "--max-pages",
+        help="Maximum pages to crawl"
     ),
     parallel: int = typer.Option(
         5, "--parallel",
         help="Parallel workers"
     ),
-    modules: Optional[str] = typer.Option(
-        None, "--modules",
-        help="Comma-separated list of modules to run"
-    ),
-    skip_modules: Optional[str] = typer.Option(
-        None, "--skip-modules",
-        help="Comma-separated list of modules to skip"
-    ),
-    exclude: Optional[List[str]] = typer.Option(
-        None, "--exclude",
-        help="Paths to exclude from scanning"
-    ),
-    proxy: Optional[str] = typer.Option(
-        None, "--proxy",
-        help="HTTP proxy URL"
-    ),
-    ai: bool = typer.Option(
-        False, "--ai",
-        help="Enable AI-enhanced scanning (requires ANTHROPIC_API_KEY)"
-    ),
-    browser: bool = typer.Option(
-        False, "--browser",
-        help="Enable browser validation (requires playwright)"
-    ),
     skip_verify: bool = typer.Option(
         False, "--skip-verify",
-        help="Skip ownership verification prompt"
-    ),
-    no_banner: bool = typer.Option(
-        False, "--no-banner",
-        help="Skip the banner"
+        help="Skip authorization prompt"
     ),
     verbose: bool = typer.Option(
         False, "--verbose", "-v",
         help="Verbose output"
     ),
-    quiet: bool = typer.Option(
-        False, "--quiet", "-q",
-        help="Minimal output (errors only)"
-    ),
 ):
     """
-    Run a security scan against a target.
+    Run Shannon-style 4-phase security assessment.
 
-    Examples:
-        breach https://example.com
-        breach https://example.com --mode proven --browser
-        breach https://example.com --cookie "session=abc" -o report.json
+    Phase 1: Reconnaissance - Map attack surface
+    Phase 2: Vulnerability Analysis - Generate hypotheses (parallel)
+    Phase 3: Exploitation - Validate with proof (parallel)
+    Phase 4: Reporting - Generate comprehensive report
+
+    Only reports vulnerabilities that are SUCCESSFULLY EXPLOITED.
     """
-    # Load environment
     load_env()
-
-    # Banner
-    if not no_banner and not quiet and not json_stdout:
-        print_banner()
+    print_banner()
 
     # Validate target
     if not target.startswith(("http://", "https://")):
         target = f"https://{target}"
 
-    # Verify ownership
+    # Verify authorization
     if not verify_ownership(target, skip_verify):
-        console.print("[red][!] Scan cancelled. Ownership not confirmed.[/red]")
+        console.print("[red][!] Scan cancelled.[/red]")
         raise typer.Exit(code=2)
 
-    # Check AI availability
+    # Check AI
     if ai and not os.environ.get("ANTHROPIC_API_KEY"):
-        console.print("[yellow][!] ANTHROPIC_API_KEY not set. Running without AI enhancement.[/yellow]")
+        console.print("[yellow][!] ANTHROPIC_API_KEY not set. Disabling AI.[/yellow]")
         ai = False
 
-    # Check browser availability
+    # Check browser
     if browser:
         try:
             import playwright
         except ImportError:
-            console.print("[yellow][!] Playwright not installed. Run: pip install breach-ai[browser][/yellow]")
+            console.print("[yellow][!] Playwright not installed. Browser validation disabled.[/yellow]")
+            console.print("[yellow]    XSS findings cannot be validated without browser.[/yellow]")
+            console.print("[yellow]    Install: pip install playwright && playwright install[/yellow]")
             browser = False
 
+    # Check repo
+    if repo and not repo.exists():
+        console.print(f"[yellow][!] Repository not found: {repo}[/yellow]")
+        repo = None
+
     # Build config
-    config = {
-        "target": target,
-        "mode": mode.value,
-        "cookie": cookie,
-        "cookie2": cookie2,
-        "token": token,
-        "headers": dict(h.split(":", 1) for h in header) if header else {},
-        "timeout_minutes": timeout,
-        "rate_limit": rate_limit,
-        "parallel": parallel,
-        "modules": modules.split(",") if modules else None,
-        "skip_modules": skip_modules.split(",") if skip_modules else None,
-        "exclude": exclude or [],
-        "proxy": proxy,
-        "ai_enabled": ai,
-        "browser_enabled": browser,
-        "verbose": verbose,
-    }
+    from breach.workflow import WorkflowConfig
+    config = WorkflowConfig(
+        target=target,
+        repo_path=repo,
+        cookies={"session": cookie} if cookie else None,
+        use_ai=ai,
+        use_browser=browser,
+        use_source_analysis=repo is not None,
+        max_pages=max_pages,
+        max_concurrent=parallel,
+        output_dir=output,
+    )
 
-    # Run scan
+    # Run workflow
     try:
-        result = asyncio.run(_run_scan(config, quiet, json_stdout))
+        result = asyncio.run(_run_workflow(config, verbose))
 
-        # Output results
-        if json_stdout:
-            import json
-            print(json.dumps(result.to_dict() if hasattr(result, 'to_dict') else {}, indent=2, default=str))
-        elif output:
-            output_path = get_output_path(output, target, output_format)
-            _save_output(result, output_path, target=target, mode=mode.value)
-            console.print(f"\n[green][+] Report saved: {output_path}[/green]")
-
-        # Exit code based on findings
+        # Exit code
         if result.findings:
             raise typer.Exit(code=1)  # Vulnerabilities found
         raise typer.Exit(code=0)  # Clean
 
     except KeyboardInterrupt:
-        console.print("\n[yellow][!] Scan interrupted by user[/yellow]")
+        console.print("\n[yellow][!] Interrupted[/yellow]")
         raise typer.Exit(code=130)
     except Exception as e:
         console.print(f"\n[red][!] Error: {e}[/red]")
@@ -307,205 +213,23 @@ def scan(
         raise typer.Exit(code=2)
 
 
-async def _run_scan(config: dict, quiet: bool, json_stdout: bool):
-    """Execute the scan based on mode."""
-    mode = config["mode"]
+async def _run_workflow(config, verbose: bool):
+    """Execute the workflow."""
+    from breach.workflow import WorkflowEngine
 
-    if mode == "quick":
-        return await _run_quick_scan(config, quiet)
-    elif mode == "deep":
-        return await _run_deep_scan(config, quiet)
-    elif mode == "proven":
-        return await _run_proven_scan(config, quiet)
-    elif mode == "chaos":
-        return await _run_chaos_scan(config, quiet)
-    else:
-        raise ValueError(f"Unknown mode: {mode}")
+    def on_progress(msg):
+        if verbose:
+            console.print(f"[dim]{msg}[/dim]")
 
+    def on_finding(finding):
+        console.print(f"[green]✓ EXPLOITED: {finding.vuln_type} - {finding.endpoint}[/green]")
 
-async def _run_quick_scan(config: dict, quiet: bool):
-    """Run quick reconnaissance scan."""
-    from breach.engine import BreachEngine
-
-    if not quiet:
-        console.print(Panel(
-            f"[bold]Quick Scan[/bold]\n"
-            f"Target: {config['target']}\n"
-            f"Mode: Reconnaissance + Common Vulnerabilities",
-            title="[cyan]BREACH.AI[/cyan]",
-            border_style="cyan"
-        ))
-
-    async with BreachEngine(deep_mode=False) as engine:
-        await engine.breach(
-            target=config["target"],
-            cookie=config["cookie"],
-        )
-        return engine.state
-
-
-async def _run_deep_scan(config: dict, quiet: bool):
-    """Run deep comprehensive scan."""
-    from breach.deep_scan.engine import DeepScanEngine
-
-    if not quiet:
-        console.print(Panel(
-            f"[bold]Deep Scan[/bold]\n"
-            f"Target: {config['target']}\n"
-            f"Mode: Comprehensive Injection Testing",
-            title="[yellow]BREACH.AI[/yellow]",
-            border_style="yellow"
-        ))
-
-    async with DeepScanEngine(
-        timeout_minutes=config["timeout_minutes"],
-        max_concurrent=config["parallel"],
+    async with WorkflowEngine(
+        config=config,
+        on_progress=on_progress,
+        on_finding=on_finding,
     ) as engine:
-        # Progress callback
-        def on_progress(pct, msg):
-            if not quiet:
-                console.print(f"[dim]{pct}%[/dim] {msg}")
-
-        result = await engine.scan(
-            target=config["target"],
-            cookies={"session": config["cookie"]} if config["cookie"] else None,
-            cookies2={"session": config["cookie2"]} if config["cookie2"] else None,
-            token=config["token"],
-            progress_callback=on_progress,
-        )
-        return result
-
-
-async def _run_proven_scan(config: dict, quiet: bool):
-    """Run proof-by-exploitation scan (only reports exploited vulns)."""
-    from breach.exploitation.shannon_engine import ShannonEngine
-
-    if not quiet:
-        console.print(Panel(
-            f"[bold]Proven Mode[/bold]\n"
-            f"Target: {config['target']}\n"
-            f"Mode: Proof-by-Exploitation\n"
-            f"[dim]Only reports vulnerabilities that are successfully exploited[/dim]",
-            title="[red]BREACH.AI[/red]",
-            border_style="red"
-        ))
-
-    async with ShannonEngine(
-        timeout_minutes=config["timeout_minutes"],
-        use_browser=config["browser_enabled"],
-        use_source_analysis=False,  # Requires source code
-        parallel_agents=config["parallel"],
-        screenshot=config["browser_enabled"],
-    ) as engine:
-        # Progress callback
-        def on_progress(pct, msg):
-            if not quiet:
-                console.print(f"[dim]{pct}%[/dim] {msg}")
-
-        engine.on_progress(on_progress)
-
-        result = await engine.scan(
-            target=config["target"],
-            cookies={"session": config["cookie"]} if config["cookie"] else None,
-        )
-        return result
-
-
-async def _run_chaos_scan(config: dict, quiet: bool):
-    """Run all 60+ attack modules (brutal assessment)."""
-    from breach.brutal_assessment import BrutalAssessment
-
-    if not quiet:
-        console.print(Panel(
-            f"[bold]Chaos Mode[/bold]\n"
-            f"Target: {config['target']}\n"
-            f"Mode: ALL 60+ Attack Modules\n"
-            f"[dim]Maximum depth exploitation[/dim]",
-            title="[magenta]BREACH.AI[/magenta]",
-            border_style="magenta"
-        ))
-
-    assessment = BrutalAssessment(
-        target=config["target"],
-        aggressive=True,
-        timeout_per_module=config["timeout_minutes"] * 60 // 60,  # Convert to per-module
-        max_concurrent=config["parallel"],
-    )
-
-    result = await assessment.run()
-    return result
-
-
-def _save_output(result, path: Path, target: str = "", mode: str = "quick"):
-    """Save scan results to file using the appropriate formatter."""
-    from breach.output import JSONFormatter, MarkdownFormatter, HTMLFormatter
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Extract findings from result
-    findings = []
-    if hasattr(result, 'findings'):
-        for f in result.findings:
-            finding = _convert_finding_to_dict(f)
-            findings.append(finding)
-
-    # Build stats
-    stats = {
-        "critical_count": sum(1 for f in findings if f.get("severity", "").lower() == "critical"),
-        "high_count": sum(1 for f in findings if f.get("severity", "").lower() == "high"),
-        "medium_count": sum(1 for f in findings if f.get("severity", "").lower() == "medium"),
-        "low_count": sum(1 for f in findings if f.get("severity", "").lower() == "low"),
-        "info_count": sum(1 for f in findings if f.get("severity", "").lower() == "info"),
-        "total_impact": sum(f.get("business_impact", 0) for f in findings),
-    }
-
-    # Get duration if available
-    duration = getattr(result, 'duration_seconds', 0) or 0
-
-    if path.suffix == ".json":
-        formatter = JSONFormatter(pretty=True)
-        formatter.save(str(path), target, mode, findings, stats, duration)
-    elif path.suffix == ".md":
-        formatter = MarkdownFormatter(include_poc=True)
-        formatter.save(str(path), target, mode, findings, stats, duration)
-    elif path.suffix == ".html":
-        formatter = HTMLFormatter(include_poc=True)
-        formatter.save(str(path), target, mode, findings, stats, duration)
-    else:
-        # Default to JSON
-        formatter = JSONFormatter(pretty=True)
-        formatter.save(str(path.with_suffix('.json')), target, mode, findings, stats, duration)
-
-
-def _convert_finding_to_dict(f) -> dict:
-    """Convert a finding object to a dictionary."""
-    if isinstance(f, dict):
-        return f
-
-    # Handle various finding object types
-    return {
-        "title": getattr(f, 'title', getattr(f, 'vulnerability_type', 'Unknown')),
-        "severity": str(getattr(f, 'severity', 'medium')).lower().replace('severity.', ''),
-        "category": getattr(f, 'category', getattr(f, 'vulnerability_type', '')),
-        "vulnerability_type": getattr(f, 'vulnerability_type', ''),
-        "endpoint": getattr(f, 'endpoint', ''),
-        "method": getattr(f, 'method', 'GET'),
-        "parameter": getattr(f, 'parameter', None),
-        "description": getattr(f, 'description', ''),
-        "payload": getattr(f, 'payload', ''),
-        "evidence": getattr(f, 'evidence', {}),
-        "business_impact": getattr(f, 'business_impact', 0),
-        "impact_explanation": getattr(f, 'impact_explanation', ''),
-        "is_exploited": getattr(f, 'is_exploited', False),
-        "exploitation_confidence": getattr(f, 'exploitation_confidence', getattr(f, 'confidence', 0)),
-        "exploitation_proof": getattr(f, 'exploitation_proof', getattr(f, 'proof_data', {})),
-        "proof_type": getattr(f, 'proof_type', getattr(f, 'exploitation_proof_type', '')),
-        "curl_command": getattr(f, 'curl_command', ''),
-        "reproduction_steps": getattr(f, 'reproduction_steps', []),
-        "poc_script": getattr(f, 'poc_script', ''),
-        "remediation": getattr(f, 'remediation', getattr(f, 'fix_suggestion', '')),
-        "cwe_id": getattr(f, 'cwe_id', ''),
-    }
+        return await engine.run()
 
 
 # ============== UTILITY COMMANDS ==============
@@ -513,69 +237,69 @@ def _convert_finding_to_dict(f) -> dict:
 @app.command()
 def version():
     """Show version information."""
-    console.print(f"[bold]BREACH.AI[/bold] v{__version__}")
+    console.print(f"[bold]BREACH[/bold] v{__version__}")
+    console.print("[dim]Shannon-Style Autonomous Pentester[/dim]")
+
+    console.print("\n[cyan]Features:[/cyan]")
 
     # Check optional dependencies
-    console.print("\n[dim]Optional Features:[/dim]")
-
     try:
         import anthropic
         console.print("  [green]✓[/green] AI (anthropic)")
     except ImportError:
-        console.print("  [red]✗[/red] AI - pip install breach-ai[ai]")
+        console.print("  [red]✗[/red] AI - pip install anthropic")
 
     try:
         import playwright
         console.print("  [green]✓[/green] Browser (playwright)")
     except ImportError:
-        console.print("  [red]✗[/red] Browser - pip install breach-ai[browser]")
+        console.print("  [red]✗[/red] Browser - pip install playwright && playwright install")
 
 
 @app.command()
 def doctor():
-    """Check system dependencies and configuration."""
-    console.print("[bold]BREACH.AI Doctor[/bold]\n")
+    """Check system dependencies."""
+    console.print("[bold]BREACH Doctor[/bold]\n")
 
     checks = []
 
-    # Python version
+    # Python
     import sys
     py_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
     py_ok = sys.version_info >= (3, 11)
     checks.append(("Python >= 3.11", py_version, py_ok))
 
-    # Core dependencies (package_name, import_name)
+    # Core deps
     deps = [
         ("aiohttp", "aiohttp"),
         ("rich", "rich"),
         ("typer", "typer"),
-        ("pydantic", "pydantic"),
         ("beautifulsoup4", "bs4"),
+        ("lxml", "lxml"),
     ]
-    for pkg_name, import_name in deps:
+    for pkg, imp in deps:
         try:
-            __import__(import_name)
-            checks.append((pkg_name, "installed", True))
+            __import__(imp)
+            checks.append((pkg, "✓", True))
         except ImportError:
-            checks.append((pkg_name, "missing", False))
+            checks.append((pkg, "✗", False))
 
-    # Optional: AI
+    # Optional
     try:
         import anthropic
         api_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
-        checks.append(("anthropic", "installed", True))
+        checks.append(("anthropic", "✓", True))
         checks.append(("ANTHROPIC_API_KEY", "set" if api_key else "not set", api_key))
     except ImportError:
         checks.append(("anthropic", "not installed", False))
 
-    # Optional: Browser
     try:
         import playwright
-        checks.append(("playwright", "installed", True))
+        checks.append(("playwright", "✓", True))
     except ImportError:
         checks.append(("playwright", "not installed", False))
 
-    # Display results
+    # Display
     table = Table(box=box.ROUNDED)
     table.add_column("Check", style="cyan")
     table.add_column("Status")
@@ -584,98 +308,91 @@ def doctor():
     all_ok = True
     for name, status, ok in checks:
         all_ok = all_ok and ok
-        table.add_row(
-            name,
-            status,
-            "[green]✓[/green]" if ok else "[red]✗[/red]"
-        )
+        table.add_row(name, str(status), "[green]✓[/green]" if ok else "[red]✗[/red]")
 
     console.print(table)
 
     if all_ok:
         console.print("\n[green]All checks passed![/green]")
     else:
-        console.print("\n[yellow]Some optional features are not available.[/yellow]")
-        console.print("Run: [bold]pip install breach-ai[full][/bold]")
+        console.print("\n[yellow]Install missing dependencies:[/yellow]")
+        console.print("  pip install breach-ai[full]")
+        console.print("  playwright install chromium")
 
 
-@app.command("list-modules")
-def list_modules():
-    """List all available attack modules."""
-    console.print("[bold]Available Attack Modules[/bold]\n")
+@app.command("list-phases")
+def list_phases():
+    """List the 4-phase workflow."""
+    console.print("[bold]BREACH 4-Phase Workflow[/bold]\n")
 
-    # Categories and modules
-    modules = {
-        "Injection": ["sqli", "xss", "ssrf", "cmdi", "ssti", "nosql", "xxe", "ldap"],
-        "Authentication": ["auth_bypass", "jwt", "oauth", "saml", "mfa_bypass", "session"],
-        "Access Control": ["idor", "privilege_escalation", "forced_browsing"],
-        "API Security": ["graphql", "rest_api", "websocket", "api_abuse"],
-        "File Attacks": ["lfi", "rfi", "file_upload", "path_traversal"],
-        "Cloud": ["aws", "azure", "gcp", "kubernetes", "docker"],
-        "Business Logic": ["race_condition", "price_manipulation", "workflow_bypass"],
-    }
+    phases = [
+        ("Phase 1", "Reconnaissance", "Map attack surface, discover endpoints, detect technologies"),
+        ("Phase 2", "Vulnerability Analysis", "Parallel OWASP agents generate hypotheses"),
+        ("Phase 3", "Exploitation", "Test hypotheses, capture proof (NO EXPLOIT = NO REPORT)"),
+        ("Phase 4", "Reporting", "Generate comprehensive assessment report"),
+    ]
 
-    for category, mods in modules.items():
-        console.print(f"\n[cyan]{category}[/cyan]")
-        for mod in mods:
-            console.print(f"  • {mod}")
-
-    console.print(f"\n[dim]Total: 60+ modules available in chaos mode[/dim]")
+    for num, name, desc in phases:
+        console.print(f"[cyan]{num}:[/cyan] [bold]{name}[/bold]")
+        console.print(f"  {desc}\n")
 
 
-@app.command()
-def config(
-    action: str = typer.Argument(..., help="Action: show, set, unset"),
-    key: Optional[str] = typer.Argument(None, help="Config key"),
-    value: Optional[str] = typer.Argument(None, help="Config value"),
+@app.command("init")
+def init_config(
+    target: str = typer.Argument(..., help="Target URL"),
+    output: Path = typer.Option(Path("./configs"), help="Config directory"),
 ):
-    """Manage CLI configuration."""
-    config_file = Path.home() / ".breach" / "config.json"
+    """Generate a configuration file for a target."""
+    from urllib.parse import urlparse
 
-    import json
+    domain = urlparse(target).netloc.replace(":", "_")
+    config_path = output / f"{domain}.yaml"
 
-    # Load existing config
-    if config_file.exists():
-        cfg = json.loads(config_file.read_text())
-    else:
-        cfg = {}
+    config_content = f"""# BREACH Configuration for {target}
+# Generated: {datetime.now().isoformat()}
 
-    if action == "show":
-        if not cfg:
-            console.print("[dim]No configuration set[/dim]")
-        else:
-            for k, v in cfg.items():
-                # Mask sensitive values
-                display = v[:4] + "..." if "key" in k.lower() else v
-                console.print(f"  {k}: {display}")
+target: {target}
 
-    elif action == "set":
-        if not key or not value:
-            console.print("[red]Usage: breach config set <key> <value>[/red]")
-            raise typer.Exit(1)
+# Authentication (optional)
+# authentication:
+#   login_type: form
+#   login_url: "{target}/login"
+#   credentials:
+#     username: "test@example.com"
+#     password: "password123"
 
-        config_file.parent.mkdir(parents=True, exist_ok=True)
-        cfg[key] = value
-        config_file.write_text(json.dumps(cfg, indent=2))
-        console.print(f"[green]Set {key}[/green]")
+# Scanning options
+scan:
+  max_pages: 100
+  timeout_minutes: 30
+  parallel: 5
 
-    elif action == "unset":
-        if not key:
-            console.print("[red]Usage: breach config unset <key>[/red]")
-            raise typer.Exit(1)
+# Modules to run (default: all)
+# modules:
+#   - sqli
+#   - xss
+#   - ssrf
+#   - cmdi
+#   - auth
 
-        if key in cfg:
-            del cfg[key]
-            config_file.write_text(json.dumps(cfg, indent=2))
-            console.print(f"[green]Removed {key}[/green]")
-        else:
-            console.print(f"[yellow]Key not found: {key}[/yellow]")
+# Paths to exclude
+# exclude:
+#   - /logout
+#   - /admin
+
+# Source code path (for white-box testing)
+# repo: ./repos/{domain}
+"""
+
+    output.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(config_content)
+    console.print(f"[green]Config created: {config_path}[/green]")
 
 
 # ============== ENTRY POINT ==============
 
 def main():
-    """Main entry point for the CLI."""
+    """Main entry point."""
     app()
 
 
