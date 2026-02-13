@@ -174,17 +174,135 @@ async def get_scan(
     db: AsyncSession = Depends(get_db),
 ):
     """Get scan details with findings."""
-    user, org = current
-    scan_service = ScanService(db)
+    try:
+        user, org = current
+        scan_service = ScanService(db)
 
-    scan = await scan_service.get_scan_with_findings(scan_id, org.id)
-    if not scan:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Scan not found",
-        )
+        scan = await scan_service.get_scan_with_findings(scan_id, org.id)
+        if not scan:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Scan not found",
+            )
 
-    return scan
+        return scan
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Fallback to sync SQLite read when async fails (greenlet issues)
+        logger.warning("scan_fetch_async_failed", scan_id=str(scan_id), error=str(e))
+        try:
+            return await _get_scan_sync_fallback(scan_id)
+        except Exception as fallback_error:
+            logger.warning("scan_fetch_fallback_failed", scan_id=str(scan_id), error=str(fallback_error))
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Scan data temporarily unavailable. Please retry.",
+            )
+
+
+async def _get_scan_sync_fallback(scan_id: UUID):
+    """Fallback to sync database when async has greenlet issues."""
+    import psycopg2
+    import psycopg2.extras
+    from backend.config import settings
+
+    # Parse PostgreSQL URL
+    db_url = settings.database_url
+    # Convert asyncpg URL to psycopg2 format
+    db_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
+    # Fix SSL parameter for psycopg2
+    db_url = db_url.replace("?ssl=require", "?sslmode=require")
+
+    conn = psycopg2.connect(db_url)
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    try:
+        # Get scan - use actual column names from the model
+        cursor.execute("""
+            SELECT id, organization_id, target_id, target_url, status, mode,
+                   progress, current_phase, findings_count, critical_count,
+                   high_count, medium_count, low_count, info_count,
+                   total_business_impact, started_at, completed_at,
+                   duration_seconds, error_message, created_at
+            FROM scans WHERE id = %s
+        """, (str(scan_id),))
+        scan_row = cursor.fetchone()
+
+        if not scan_row:
+            raise HTTPException(status_code=404, detail="Scan not found")
+
+        # Get findings - use actual column names from the model
+        # Note: "references" must be quoted as it's a PostgreSQL reserved keyword
+        cursor.execute("""
+            SELECT id, scan_id, title, severity, category, endpoint, method, parameter,
+                   description, evidence, business_impact, impact_explanation,
+                   records_exposed, pii_fields, fix_suggestion, "references",
+                   curl_command, is_false_positive, is_resolved, resolved_at, discovered_at
+            FROM findings WHERE scan_id = %s
+            ORDER BY
+                CASE severity
+                    WHEN 'critical' THEN 1
+                    WHEN 'high' THEN 2
+                    WHEN 'medium' THEN 3
+                    WHEN 'low' THEN 4
+                    ELSE 5
+                END
+        """, (str(scan_id),))
+        finding_rows = cursor.fetchall()
+
+        # Build response
+        findings = []
+        for f in finding_rows:
+            findings.append({
+                "id": str(f["id"]),
+                "scan_id": str(f["scan_id"]),
+                "title": f["title"],
+                "severity": f["severity"],
+                "category": f["category"],
+                "endpoint": f["endpoint"],
+                "method": f["method"] or "GET",
+                "parameter": f["parameter"],
+                "description": f["description"],
+                "evidence": f["evidence"] or {},
+                "business_impact": f["business_impact"] or 0,
+                "impact_explanation": f["impact_explanation"],
+                "records_exposed": f["records_exposed"] or 0,
+                "pii_fields": f["pii_fields"] or [],
+                "fix_suggestion": f["fix_suggestion"],
+                "references": f["references"] or [],
+                "curl_command": f["curl_command"],
+                "is_false_positive": f["is_false_positive"] or False,
+                "is_resolved": f["is_resolved"] or False,
+                "resolved_at": f["resolved_at"].isoformat() if f["resolved_at"] else None,
+                "discovered_at": f["discovered_at"].isoformat() if f["discovered_at"] else None,
+            })
+
+        return {
+            "id": str(scan_row["id"]),
+            "organization_id": str(scan_row["organization_id"]),
+            "target_id": str(scan_row["target_id"]) if scan_row["target_id"] else None,
+            "target_url": scan_row["target_url"],
+            "status": scan_row["status"],
+            "mode": scan_row["mode"],
+            "progress": scan_row["progress"] or 0,
+            "current_phase": scan_row["current_phase"],
+            "findings_count": scan_row["findings_count"] or 0,
+            "critical_count": scan_row["critical_count"] or 0,
+            "high_count": scan_row["high_count"] or 0,
+            "medium_count": scan_row["medium_count"] or 0,
+            "low_count": scan_row["low_count"] or 0,
+            "info_count": scan_row["info_count"] or 0,
+            "total_business_impact": scan_row["total_business_impact"] or 0,
+            "started_at": scan_row["started_at"].isoformat() if scan_row["started_at"] else None,
+            "completed_at": scan_row["completed_at"].isoformat() if scan_row["completed_at"] else None,
+            "duration_seconds": scan_row["duration_seconds"],
+            "error_message": scan_row["error_message"],
+            "created_at": scan_row["created_at"].isoformat() if scan_row["created_at"] else None,
+            "findings": findings,
+        }
+    finally:
+        conn.close()
 
 
 @router.post("/{scan_id}/cancel", response_model=ScanResponse)
@@ -299,6 +417,17 @@ async def export_scan(
                     "fix_suggestion": f.fix_suggestion,
                     "curl_command": f.curl_command,
                     "discovered_at": f.discovered_at.isoformat() if f.discovered_at else None,
+                    # Shannon mode exploitation proof fields
+                    "is_exploited": getattr(f, 'is_exploited', False),
+                    "exploitation_proof": getattr(f, 'exploitation_proof', None),
+                    "exploitation_proof_type": getattr(f, 'exploitation_proof_type', None),
+                    "exploitation_confidence": getattr(f, 'exploitation_confidence', 0.0),
+                    "reproduction_steps": getattr(f, 'reproduction_steps', []),
+                    "poc_script": getattr(f, 'poc_script', None),
+                    "data_flow_source": getattr(f, 'data_flow_source', None),
+                    "data_flow_sink": getattr(f, 'data_flow_sink', None),
+                    "source_file": getattr(f, 'source_file', None),
+                    "source_line": getattr(f, 'source_line', None),
                 }
                 for f in findings
             ],
@@ -317,11 +446,12 @@ async def export_scan(
         output = io.StringIO()
         writer = csv.writer(output)
 
-        # Header
+        # Header - includes Shannon mode fields
         writer.writerow([
             "Severity", "Category", "Title", "Description", "Endpoint",
             "Method", "Business Impact", "Records Exposed", "PII Fields",
-            "Fix Suggestion", "Discovered At"
+            "Fix Suggestion", "Discovered At", "Is Exploited", "Exploitation Confidence",
+            "Proof Type", "cURL Command"
         ])
 
         # Data rows
@@ -338,6 +468,10 @@ async def export_scan(
                 ", ".join(f.pii_fields) if f.pii_fields else "",
                 f.fix_suggestion,
                 f.discovered_at.isoformat() if f.discovered_at else "",
+                "Yes" if getattr(f, 'is_exploited', False) else "No",
+                f"{getattr(f, 'exploitation_confidence', 0) * 100:.0f}%",
+                getattr(f, 'exploitation_proof_type', ""),
+                f.curl_command or "",
             ])
 
         output.seek(0)
@@ -365,17 +499,69 @@ async def export_scan(
         )):
             sev = f.severity.value if hasattr(f.severity, 'value') else f.severity
             color = severity_colors.get(sev, "#6c757d")
+
+            # Shannon Mode exploitation badge
+            exploitation_badge = ""
+            if hasattr(f, 'is_exploited') and f.is_exploited:
+                exploitation_badge = f"""
+                <span style="background: #28a745; color: white; padding: 4px 8px; border-radius: 4px; font-size: 11px; margin-left: 8px;">
+                    ✓ EXPLOITED ({f.exploitation_confidence * 100:.0f}% confidence)
+                </span>"""
+
+            # Shannon Mode evidence section
+            evidence_section = ""
+            if hasattr(f, 'is_exploited') and f.is_exploited:
+                evidence_section = f"""
+                <div style="background: #fff3cd; padding: 12px; border-radius: 4px; margin-top: 10px; border-left: 3px solid #ffc107;">
+                    <strong>🔐 Exploitation Proof:</strong>
+                    <p style="margin: 5px 0 0 0; font-size: 13px;">
+                        Type: <code>{f.exploitation_proof_type or 'N/A'}</code>
+                    </p>
+                </div>"""
+
+                # Add reproduction steps if available
+                if hasattr(f, 'reproduction_steps') and f.reproduction_steps:
+                    steps_html = "".join([f"<li>{step}</li>" for step in f.reproduction_steps])
+                    evidence_section += f"""
+                    <div style="margin-top: 10px;">
+                        <strong>📋 Reproduction Steps:</strong>
+                        <ol style="margin: 5px 0 0 0; padding-left: 20px; font-size: 13px;">{steps_html}</ol>
+                    </div>"""
+
+                # Add PoC script if available
+                if hasattr(f, 'poc_script') and f.poc_script:
+                    evidence_section += f"""
+                    <div style="margin-top: 10px;">
+                        <strong>🔧 PoC Script:</strong>
+                        <pre style="background: #1e1e1e; color: #d4d4d4; padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 11px; margin-top: 5px; max-height: 200px; overflow-y: auto;">{f.poc_script[:1000]}{'...' if len(f.poc_script) > 1000 else ''}</pre>
+                    </div>"""
+
+                # Add data flow info if available
+                if hasattr(f, 'data_flow_source') and f.data_flow_source:
+                    evidence_section += f"""
+                    <div style="margin-top: 10px; background: #d1ecf1; padding: 10px; border-radius: 4px;">
+                        <strong>📊 Data Flow Analysis (White-Box):</strong>
+                        <p style="margin: 5px 0 0 0; font-size: 13px;">
+                            Source: <code>{f.data_flow_source}</code> → Sink: <code>{f.data_flow_sink or 'N/A'}</code>
+                            {f'<br>File: <code>{f.source_file}:{f.source_line}</code>' if f.source_file else ''}
+                        </p>
+                    </div>"""
+
             findings_html += f"""
             <div class="finding" style="border-left: 4px solid {color}; padding: 15px; margin: 15px 0; background: #f8f9fa; border-radius: 4px;">
-                <div style="display: flex; justify-content: space-between; align-items: start;">
+                <div style="display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap;">
                     <h3 style="margin: 0 0 10px 0;">{f.title}</h3>
-                    <span style="background: {color}; color: white; padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: bold;">{sev.upper()}</span>
+                    <div>
+                        <span style="background: {color}; color: white; padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: bold;">{sev.upper()}</span>
+                        {exploitation_badge}
+                    </div>
                 </div>
                 <p style="color: #666; margin: 10px 0;"><strong>Category:</strong> {f.category}</p>
                 <p style="margin: 10px 0;">{f.description}</p>
                 {f'<p style="color: #666;"><strong>Endpoint:</strong> <code style="background: #e9ecef; padding: 2px 6px; border-radius: 3px;">{f.method} {f.endpoint}</code></p>' if f.endpoint else ''}
                 {f'<p style="color: #dc3545;"><strong>Business Impact:</strong> ${f.business_impact:,.0f}</p>' if f.business_impact else ''}
                 {f'<p style="color: #dc3545;"><strong>Records Exposed:</strong> {f.records_exposed}</p>' if f.records_exposed else ''}
+                {evidence_section}
                 {f'<div style="background: #d4edda; padding: 10px; border-radius: 4px; margin-top: 10px;"><strong>Remediation:</strong> {f.fix_suggestion}</div>' if f.fix_suggestion else ''}
                 {f'<div style="margin-top: 10px;"><strong>Reproduce:</strong><pre style="background: #1e1e1e; color: #d4d4d4; padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 12px;">{f.curl_command}</pre></div>' if f.curl_command else ''}
             </div>

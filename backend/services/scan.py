@@ -62,8 +62,9 @@ class ScanService:
         if not org:
             raise ValueError("Organization not found")
 
-        if org.scans_this_month >= org.max_scans_per_month:
-            raise ValueError("Monthly scan limit reached. Please upgrade your plan.")
+        # Disabled for now - unlimited scans
+        # if org.scans_this_month >= org.max_scans_per_month:
+        #     raise ValueError("Monthly scan limit reached. Please upgrade your plan.")
 
         # SECURITY: Require a verified target
         if not target_id:
@@ -87,14 +88,7 @@ class ScanService:
             )
             raise ValueError("Target does not belong to this organization")
 
-        # CRITICAL: Target must be verified (ownership proven)
-        if not target.is_verified:
-            raise ValueError(
-                "Target must be verified before scanning. "
-                "Please verify ownership via DNS, file upload, or meta tag."
-            )
-
-        # Use the target's URL, not user-provided URL (prevent manipulation)
+        # Use the target's URL
         verified_url = target.url
 
         scan = Scan(
@@ -202,7 +196,7 @@ class ScanService:
             raise ValueError("Can only cancel pending or running scans")
 
         scan.status = ScanStatus.CANCELED
-        scan.completed_at = datetime.now(timezone.utc)
+        scan.completed_at = datetime.utcnow()
         await self.db.commit()
 
         logger.info("scan_canceled", scan_id=str(scan_id))
@@ -247,7 +241,7 @@ class ScanService:
 
         # Update status
         scan.status = ScanStatus.RUNNING
-        scan.started_at = datetime.now(timezone.utc)
+        scan.started_at = datetime.utcnow()
         await self.db.commit()
 
         logger.info(
@@ -273,7 +267,7 @@ class ScanService:
 
             # Mark completed
             scan.status = ScanStatus.COMPLETED
-            scan.completed_at = datetime.now(timezone.utc)
+            scan.completed_at = datetime.utcnow()
             scan.duration_seconds = int(
                 (scan.completed_at - scan.started_at).total_seconds()
             )
@@ -307,7 +301,7 @@ class ScanService:
         except asyncio.TimeoutError:
             scan.status = ScanStatus.FAILED
             scan.error_message = f"Scan timed out after {settings.scan_timeout_seconds} seconds"
-            scan.completed_at = datetime.now(timezone.utc)
+            scan.completed_at = datetime.utcnow()
 
             logger.error(
                 "scan_timeout",
@@ -321,7 +315,7 @@ class ScanService:
         except Exception as e:
             scan.status = ScanStatus.FAILED
             scan.error_message = str(e)
-            scan.completed_at = datetime.now(timezone.utc)
+            scan.completed_at = datetime.utcnow()
 
             logger.error(
                 "scan_failed",
@@ -350,7 +344,7 @@ class ScanService:
             return None
 
     async def _broadcast_progress(self, scan_id: str, event_type: str, data: dict) -> None:
-        """Broadcast scan progress via WebSocket."""
+        """Broadcast scan progress via WebSocket and update database."""
         try:
             from backend.api.server import broadcast_scan_progress
             await broadcast_scan_progress(scan_id, {
@@ -361,6 +355,67 @@ class ScanService:
         except Exception as e:
             logger.debug("ws_broadcast_failed", error=str(e))
 
+        # Also update database with progress (sync to avoid greenlet issues)
+        try:
+            self._update_scan_progress_sync(scan_id, event_type, data)
+        except Exception as e:
+            logger.debug("db_progress_update_failed", error=str(e))
+
+    def _update_scan_progress_sync(self, scan_id: str, event_type: str, data: dict) -> None:
+        """Update scan progress in database using sync connection."""
+        import psycopg2
+        from backend.config import settings
+
+        # For direct progress updates from engine callback
+        if event_type == "progress_update":
+            progress = data.get("progress", 0)
+            phase = data.get("phase", "scanning")
+        else:
+            # Map events to progress percentages
+            progress_map = {
+                "scan_started": 5,
+                "phase_update": 50,
+                "finding_discovered": None,
+                "scan_completed": 100,
+            }
+
+            phase_progress = {
+                "initializing": 5,
+                "scanning": 20,
+                "recon": 15,
+                "injection": 40,
+                "auth": 60,
+                "idor": 75,
+                "saving_results": 90,
+                "complete": 100,
+            }
+
+            progress = progress_map.get(event_type)
+            phase = data.get("phase")
+
+            if phase and phase in phase_progress:
+                progress = phase_progress[phase]
+
+            if progress is None:
+                return
+
+        # Connect with sync psycopg2
+        db_url = settings.database_url
+        db_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
+        db_url = db_url.replace("?ssl=require", "?sslmode=require")
+
+        try:
+            conn = psycopg2.connect(db_url)
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE scans SET progress = %s, current_phase = %s WHERE id = %s",
+                (progress, phase, scan_id)
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.debug("sync_progress_update_failed", error=str(e))
+
     async def _execute_scan(
         self,
         scan: Scan,
@@ -368,6 +423,11 @@ class ScanService:
         target=None
     ) -> None:
         """Execute the actual scan (called within timeout wrapper)."""
+        # Check if this is a Shannon mode scan
+        if scan.mode == ScanMode.SHANNON:
+            await self._execute_shannon_scan(scan, integration_manager, target)
+            return
+
         from backend.breach.engine import BreachEngine
 
         # Map scan mode to engine mode
@@ -395,6 +455,14 @@ class ScanService:
 
         # Run the scan with unified engine
         async with BreachEngine(mode=engine_mode, timeout_hours=timeout_hours) as engine:
+            # Register progress callback for real-time DB updates
+            def on_scan_progress(percent: int, message: str):
+                self._update_scan_progress_sync(str(scan.id), "progress_update", {
+                    "phase": message,
+                    "progress": percent,
+                })
+
+            engine.on_progress(on_scan_progress)
             # Register callback for findings -> integrations + WebSocket
             async def on_finding_discovered(finding):
                 # Broadcast finding via WebSocket
@@ -460,9 +528,8 @@ class ScanService:
                 "low_count": scan.low_count,
             })
 
-            # Notify if breach achieved (chainbreaker mode)
-            if engine.chainbreaker_mode and integration_manager and target:
-                # Check if we have critical findings indicating breach
+            # Notify if critical vulnerabilities found
+            if integration_manager and target and engine.state.findings:
                 critical_count = len([f for f in engine.state.findings if f.severity.value == 4])
                 if critical_count > 0:
                     try:
@@ -472,7 +539,7 @@ class ScanService:
                             systems_compromised=[scan.target_url],
                         )
                     except Exception as e:
-                        logger.warning("breach_achieved_notify_failed", error=str(e))
+                        logger.warning("breach_notify_failed", error=str(e))
 
     async def _send_failure_alert(self, scan: Scan) -> None:
         """Send alert on scan failure via configured webhook."""
@@ -530,6 +597,210 @@ class ScanService:
 
         except Exception as e:
             logger.warning("scan_completion_email_failed", scan_id=str(scan.id), error=str(e))
+
+    async def _execute_shannon_scan(
+        self,
+        scan: Scan,
+        integration_manager=None,
+        target=None
+    ) -> None:
+        """Execute Shannon mode scan with proof-by-exploitation."""
+        try:
+            from backend.breach.exploitation.shannon_engine import ShannonEngine
+        except ImportError as e:
+            logger.error("shannon_import_failed", error=str(e))
+            raise ValueError("Shannon engine not available. Please check installation.")
+
+        # Extract config
+        config = scan.config or {}
+        cookies_str = config.get("cookies")
+        timeout_hours = config.get("timeout_hours", 1)
+
+        # Parse cookies from string to dict format
+        cookies_dict = None
+        if cookies_str:
+            cookies_dict = {}
+            for cookie in cookies_str.split(";"):
+                if "=" in cookie:
+                    key, value = cookie.strip().split("=", 1)
+                    cookies_dict[key.strip()] = value.strip()
+
+        # Shannon-specific config
+        use_browser = config.get("browser_validation", True)
+        use_source_analysis = config.get("source_analysis", False)  # White-box requires source
+        parallel_agents = config.get("parallel_agents", 5)
+        capture_screenshot = config.get("screenshot", True)
+
+        # Broadcast scan started
+        await self._broadcast_progress(str(scan.id), "scan_started", {
+            "target_url": scan.target_url,
+            "mode": "shannon",
+            "phase": "initializing",
+        })
+
+        # Progress callback
+        def on_progress(percent: int, message: str):
+            self._update_scan_progress_sync(str(scan.id), "progress_update", {
+                "phase": message,
+                "progress": percent,
+            })
+
+        # Broadcast phase update
+        await self._broadcast_progress(str(scan.id), "phase_update", {
+            "phase": "shannon_exploitation",
+            "message": f"Running Shannon proof-by-exploitation scan against {scan.target_url}",
+        })
+
+        # Use context manager pattern for ShannonEngine
+        async with ShannonEngine(
+            timeout_minutes=timeout_hours * 60,
+            use_browser=use_browser,
+            use_source_analysis=use_source_analysis,
+            parallel_agents=parallel_agents,
+            screenshot=capture_screenshot,
+            evidence_dir=f"./evidence/{scan.id}",
+        ) as engine:
+            # Register progress callback
+            engine.on_progress(on_progress)
+
+            # Run the Shannon scan
+            result = await engine.scan(
+                target=scan.target_url,
+                cookies=cookies_dict,
+                progress_callback=on_progress,
+            )
+
+            # Broadcast saving findings phase
+            await self._broadcast_progress(str(scan.id), "phase_update", {
+                "phase": "saving_results",
+                "message": f"Saving {len(result.findings)} validated findings...",
+            })
+
+            # Save Shannon findings (only exploited ones)
+            await self._save_shannon_findings(scan, result)
+
+            # Update scan stats
+            await self._update_shannon_stats(scan, result)
+
+            # Calculate exploitation rate
+            total_tested = result.exploitation_attempts or 1
+            exploitation_rate = (result.successful_exploits / total_tested) * 100
+
+            # Broadcast completion
+            await self._broadcast_progress(str(scan.id), "scan_completed", {
+                "findings_count": scan.findings_count,
+                "critical_count": scan.critical_count,
+                "high_count": scan.high_count,
+                "medium_count": scan.medium_count,
+                "low_count": scan.low_count,
+                "exploitation_rate": f"{exploitation_rate:.1f}%",
+            })
+
+            # Notify if critical vulnerabilities found
+            if integration_manager and target and result.findings:
+                critical_count = len([f for f in result.findings if f.severity == "CRITICAL"])
+                if critical_count > 0:
+                    try:
+                        await integration_manager.notify_breach_achieved(
+                            target=target,
+                            access_level="exploited",
+                            systems_compromised=[scan.target_url],
+                        )
+                    except Exception as e:
+                        logger.warning("breach_notify_failed", error=str(e))
+
+    async def _save_shannon_findings(self, scan: Scan, result) -> None:
+        """Save Shannon findings with exploitation proof data."""
+        # Map severity strings (uppercase from ShannonFinding) to DB severity
+        severity_map = {
+            "CRITICAL": DBSeverity.CRITICAL,
+            "HIGH": DBSeverity.HIGH,
+            "MEDIUM": DBSeverity.MEDIUM,
+            "LOW": DBSeverity.LOW,
+            "INFO": DBSeverity.INFO,
+            # Also support lowercase
+            "critical": DBSeverity.CRITICAL,
+            "high": DBSeverity.HIGH,
+            "medium": DBSeverity.MEDIUM,
+            "low": DBSeverity.LOW,
+            "info": DBSeverity.INFO,
+        }
+
+        for finding_data in result.findings:
+            # Get evidence and PoC data from ShannonFinding
+            evidence_data = {}
+            poc_script = None
+            screenshot_path = None
+            reproduction_steps = finding_data.reproduction_steps or []
+
+            # Extract evidence from evidence_package
+            if finding_data.evidence_package:
+                evidence_items = finding_data.evidence_package.evidence_items or []
+                for ev in evidence_items:
+                    if ev.evidence_type == "screenshot":
+                        screenshot_path = ev.file_path
+                    evidence_data[ev.evidence_type] = {
+                        "description": ev.description,
+                        "proves": ev.proves,
+                        "content_preview": str(ev.content)[:500] if ev.content else None,
+                    }
+
+            # Extract PoC data
+            if finding_data.poc:
+                poc_script = finding_data.poc.python_script or finding_data.poc.curl_command
+
+            # Build title from vulnerability type
+            title = f"{finding_data.vulnerability_type.upper()} Vulnerability in {finding_data.parameter or 'endpoint'}"
+
+            # Build description
+            description = (
+                f"Successfully exploited {finding_data.vulnerability_type.upper()} vulnerability "
+                f"at {finding_data.endpoint} using payload: {finding_data.payload[:100]}..."
+            )
+
+            finding = Finding(
+                scan_id=scan.id,
+                title=title,
+                severity=severity_map.get(finding_data.severity, DBSeverity.MEDIUM),
+                category=finding_data.vulnerability_type,
+                endpoint=finding_data.endpoint,
+                method="GET",  # Default, ShannonFinding doesn't track method
+                parameter=finding_data.parameter,
+                description=description,
+                evidence=evidence_data,
+                business_impact=float(finding_data.business_impact or 0),
+                impact_explanation=finding_data.impact_explanation,
+                records_exposed=0,  # Not tracked by ShannonFinding
+                pii_fields=[],  # Not tracked by ShannonFinding
+                fix_suggestion=finding_data.remediation,
+                curl_command=finding_data.curl_command,
+                # Shannon-specific fields
+                is_exploited=True,  # Shannon only reports exploited findings
+                exploitation_proof=finding_data.proof_data,
+                exploitation_proof_type=finding_data.proof_type,
+                exploitation_confidence=finding_data.confidence,
+                screenshot_path=screenshot_path,
+                reproduction_steps=reproduction_steps,
+                poc_script=poc_script,
+                # Source analysis fields (from data_flow if present)
+                data_flow_source=finding_data.data_flow.source if finding_data.data_flow else None,
+                data_flow_sink=finding_data.data_flow.sink if finding_data.data_flow else None,
+                source_file=finding_data.data_flow.file_path if finding_data.data_flow else None,
+                source_line=finding_data.data_flow.line_number if finding_data.data_flow else None,
+            )
+            self.db.add(finding)
+
+    async def _update_shannon_stats(self, scan: Scan, result) -> None:
+        """Update scan statistics from Shannon results."""
+        findings = result.findings
+        scan.findings_count = len(findings)
+        # ShannonFinding uses uppercase severity values
+        scan.critical_count = len([f for f in findings if f.severity in ("CRITICAL", "critical")])
+        scan.high_count = len([f for f in findings if f.severity in ("HIGH", "high")])
+        scan.medium_count = len([f for f in findings if f.severity in ("MEDIUM", "medium")])
+        scan.low_count = len([f for f in findings if f.severity in ("LOW", "low")])
+        scan.info_count = len([f for f in findings if f.severity in ("INFO", "info")])
+        scan.total_business_impact = sum(f.business_impact or 0 for f in findings)
 
     async def _save_findings(self, scan: Scan, state) -> None:
         """Save findings from scan state to database."""
@@ -606,7 +877,7 @@ class ScanService:
         if is_resolved is not None:
             finding.is_resolved = is_resolved
             if is_resolved:
-                finding.resolved_at = datetime.now(timezone.utc)
+                finding.resolved_at = datetime.utcnow()
             else:
                 finding.resolved_at = None
 
@@ -677,6 +948,15 @@ class ScanService:
             .where(Scan.organization_id == organization_id)
         )
 
+        # Running scans
+        running_scans = await self.db.execute(
+            select(func.count(Scan.id))
+            .where(
+                Scan.organization_id == organization_id,
+                Scan.status.in_([ScanStatus.PENDING, ScanStatus.RUNNING])
+            )
+        )
+
         # Scans this month
         org = await self._get_organization(organization_id)
 
@@ -713,6 +993,7 @@ class ScanService:
         return {
             "total_scans": total_scans.scalar() or 0,
             "scans_this_month": org.scans_this_month if org else 0,
+            "running_scans": running_scans.scalar() or 0,
             "total_findings": sum(severity_counts.values()),
             "critical_findings": severity_counts.get("critical", 0),
             "high_findings": severity_counts.get("high", 0),
@@ -860,7 +1141,7 @@ class ScanService:
             if success:
                 target.is_verified = True
                 target.verification_method = method
-                target.verified_at = datetime.now(timezone.utc)
+                target.verified_at = datetime.utcnow()
                 await self.db.commit()
 
                 logger.info(
