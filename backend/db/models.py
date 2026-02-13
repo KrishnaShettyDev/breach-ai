@@ -55,6 +55,7 @@ class ScanMode(str, PyEnum):
     NORMAL = "normal"
     DEEP = "deep"
     CHAINBREAKER = "chainbreaker"
+    SHANNON = "shannon"  # Shannon-style proof-by-exploitation mode
 
 
 class Severity(str, PyEnum):
@@ -91,11 +92,11 @@ class Organization(Base):
     stripe_subscription_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     trial_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
-    # Limits (based on tier) - Free tier: 1 target, 1 scan
-    max_scans_per_month: Mapped[int] = mapped_column(Integer, default=1)
-    max_targets: Mapped[int] = mapped_column(Integer, default=1)
-    max_team_members: Mapped[int] = mapped_column(Integer, default=1)
-    max_concurrent_scans: Mapped[int] = mapped_column(Integer, default=1)
+    # Limits - Unlimited for all users
+    max_scans_per_month: Mapped[int] = mapped_column(Integer, default=999999)
+    max_targets: Mapped[int] = mapped_column(Integer, default=999999)
+    max_team_members: Mapped[int] = mapped_column(Integer, default=999999)
+    max_concurrent_scans: Mapped[int] = mapped_column(Integer, default=10)
     scans_this_month: Mapped[int] = mapped_column(Integer, default=0)
 
     # Settings
@@ -307,6 +308,22 @@ class Finding(Base):
 
     # Reproduction
     curl_command: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Shannon Mode: Exploitation Proof
+    is_exploited: Mapped[bool] = mapped_column(Boolean, default=False)  # Was this actually exploited?
+    exploitation_proof: Mapped[dict] = mapped_column(JSON, default=dict)  # Proof data
+    exploitation_proof_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # js_executed, data_extracted, etc.
+    exploitation_confidence: Mapped[float] = mapped_column(Float, default=0.0)  # 0.0 to 1.0
+    screenshot_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)  # Path to screenshot evidence
+    screenshot_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # SHA256 hash for integrity
+    reproduction_steps: Mapped[list] = mapped_column(JSON, default=list)  # Step-by-step reproduction
+    poc_script: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Auto-generated PoC script
+
+    # Source Analysis (Shannon white-box)
+    data_flow_source: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # User input source
+    data_flow_sink: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # Dangerous sink
+    source_file: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)  # File where vulnerability found
+    source_line: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # Line number
 
     # Status
     is_false_positive: Mapped[bool] = mapped_column(Boolean, default=False)

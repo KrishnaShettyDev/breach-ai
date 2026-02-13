@@ -103,6 +103,7 @@ class ScanMode(str, Enum):
     NORMAL = "normal"
     DEEP = "deep"
     CHAINBREAKER = "chainbreaker"
+    SHANNON = "shannon"  # Proof-by-exploitation mode - only reports exploited vulnerabilities
 
 
 class ScanStatus(str, Enum):
@@ -222,6 +223,21 @@ class FindingResponse(BaseModel):
     references: List[str]
     curl_command: Optional[str]
 
+    # Shannon Mode: Exploitation Proof
+    is_exploited: bool = False
+    exploitation_proof: Dict[str, Any] = {}
+    exploitation_proof_type: Optional[str] = None
+    exploitation_confidence: float = 0.0
+    screenshot_path: Optional[str] = None
+    reproduction_steps: List[str] = []
+    poc_script: Optional[str] = None
+
+    # Source Analysis (Shannon white-box)
+    data_flow_source: Optional[str] = None
+    data_flow_sink: Optional[str] = None
+    source_file: Optional[str] = None
+    source_line: Optional[int] = None
+
     # Status
     is_false_positive: bool
     is_resolved: bool
@@ -291,6 +307,7 @@ class ScanStats(BaseModel):
     """Scan statistics for dashboard."""
     total_scans: int
     scans_this_month: int
+    running_scans: int
     total_findings: int
     critical_findings: int
     high_findings: int
