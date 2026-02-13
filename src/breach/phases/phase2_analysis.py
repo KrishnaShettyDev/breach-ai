@@ -1,5 +1,5 @@
 """
-BREACH v3.0 - Phase 2: Vulnerability Analysis
+BREACH v3.1 - Phase 2: Vulnerability Analysis
 ===============================================
 
 Parallel vulnerability hypothesis generation.
@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from breach.ai import ClaudeAgent, HTTPTool, SourceTool
+from breach.ai import BreachAgent, AGENT_SDK_AVAILABLE
 from breach.ai.prompts import PromptManager
 from .phase1_recon import ReconResult, Endpoint
 

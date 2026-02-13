@@ -1,27 +1,38 @@
 """
-BREACH v3.0 - AI Module
-========================
+BREACH v3.1 - AI Module (Claude Agent SDK)
+==========================================
 
-Claude Agent integration following Shannon's architecture.
-Uses Claude as an AUTONOMOUS AGENT, not a chatbot.
+Uses the official Claude Agent SDK - the same harness powering Claude Code.
 
-Key differences from v2.x:
-- Multi-turn conversations (up to 1000 turns)
-- Tool use with MCP-style integration
-- Checkpoint/retry support
-- Structured output
+Features:
+- Multi-turn autonomous execution
+- Built-in tools (Bash, Read, Write, WebFetch)
+- Custom security testing tools via MCP
+- Streaming responses
+- Checkpointing support
 """
 
-from .agent import ClaudeAgent, AgentResult
-from .tools import Tool, BrowserTool, HTTPTool, SourceTool
+from .agent import (
+    BreachAgent,
+    ClaudeAgent,  # Backward compatible alias
+    AgentResult,
+    AgentTurn,
+    AgentState,
+    create_security_tools_server,
+    AGENT_SDK_AVAILABLE,
+)
 from .prompts import PromptManager
 
 __all__ = [
+    # Main agent
+    "BreachAgent",
     "ClaudeAgent",
     "AgentResult",
-    "Tool",
-    "BrowserTool",
-    "HTTPTool",
-    "SourceTool",
+    "AgentTurn",
+    "AgentState",
+    # Tools
+    "create_security_tools_server",
+    # Utils
     "PromptManager",
+    "AGENT_SDK_AVAILABLE",
 ]

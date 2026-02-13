@@ -1,5 +1,5 @@
 """
-BREACH v3.0 - Workflow Orchestration
+BREACH v3.1 - Workflow Orchestration
 =====================================
 
 Orchestrates the 4-phase pentest workflow.

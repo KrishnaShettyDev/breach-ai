@@ -1,5 +1,5 @@
 """
-BREACH v3.0 - Prompt Management
+BREACH v3.1 - Prompt Management
 ================================
 
 Structured prompts for each phase of the pentest.

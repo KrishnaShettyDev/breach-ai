@@ -1,5 +1,5 @@
 """
-BREACH v3.0 - Phase 1: Reconnaissance
+BREACH v3.1 - Phase 1: Reconnaissance
 ======================================
 
 Map the attack surface before testing.
@@ -24,7 +24,7 @@ from urllib.parse import urljoin, urlparse
 import aiohttp
 from bs4 import BeautifulSoup
 
-from breach.ai import ClaudeAgent, HTTPTool, BrowserTool, SourceTool
+from breach.ai import BreachAgent, AGENT_SDK_AVAILABLE
 from breach.ai.prompts import PromptManager
 
 

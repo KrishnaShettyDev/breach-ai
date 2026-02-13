@@ -1,5 +1,5 @@
 """
-BREACH v3.0 - Phase Architecture
+BREACH v3.1 - Phase Architecture
 =================================
 
 Shannon-style 4-phase penetration testing:

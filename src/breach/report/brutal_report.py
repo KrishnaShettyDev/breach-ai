@@ -21,11 +21,15 @@ from breach.core.killchain import (
     BreachSession,
     BreachStep,
     BreachPhase,
+)
+from breach.core.memory import (
     Evidence,
-    EvidenceType,
     AccessLevel,
     Severity,
 )
+
+# Alias for backward compatibility
+EvidenceType = str  # Simple string type for evidence type
 
 
 class BrutalReportGenerator:

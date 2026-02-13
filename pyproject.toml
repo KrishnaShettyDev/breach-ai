@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "breach-ai"
-version = "3.0.0"
+version = "3.1.0"
 description = "Autonomous security scanner with proof-by-exploitation"
 readme = "README.md"
 license = {text = "AGPL-3.0"}
@@ -40,7 +40,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ai = ["anthropic>=0.18.0"]
+ai = ["claude-agent-sdk>=0.1.30"]
 browser = ["playwright>=1.41.0"]
 full = ["breach-ai[ai,browser]"]
 dev = [

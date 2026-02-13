@@ -1,5 +1,5 @@
 """
-BREACH v3.0 - Workflow Engine
+BREACH v3.1 - Workflow Engine
 ==============================
 
 Main orchestration engine for the 4-phase pentest.
@@ -292,7 +292,7 @@ class WorkflowEngine:
     def _banner(self):
         """Display workflow banner."""
         console.print(Panel.fit(
-            f"[bold red]BREACH v3.0[/bold red]\n"
+            f"[bold red]BREACH v3.1[/bold red]\n"
             f"[bold yellow]Shannon-Style Autonomous Pentester[/bold yellow]\n"
             f"[bold white]NO EXPLOIT, NO REPORT[/bold white]\n\n"
             f"Target: {self.config.target}\n"
@@ -390,5 +390,5 @@ class WorkflowEngine:
             console.print(f"\n[cyan]Report: {result.report_result.report_path}[/cyan]")
 
         console.print(f"\n{'='*70}")
-        console.print("[bold]BREACH v3.0 - No Exploit, No Report[/bold]")
+        console.print("[bold]BREACH v3.1 - No Exploit, No Report[/bold]")
         console.print(f"{'='*70}\n")

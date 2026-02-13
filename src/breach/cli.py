@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-BREACH v3.0 CLI
+BREACH v3.1 CLI
 ================
 
 Shannon-Style Autonomous Security Scanner
@@ -36,7 +36,7 @@ __version__ = "3.0.0"
 # Initialize
 app = typer.Typer(
     name="breach",
-    help="BREACH v3.0 - Shannon-Style Autonomous Security Scanner",
+    help="BREACH v3.1 - Shannon-Style Autonomous Security Scanner",
     add_completion=True,
     rich_markup_mode="rich",
 )
