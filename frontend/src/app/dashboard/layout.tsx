@@ -4,12 +4,13 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton } from "@clerk/nextjs";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, Scan, Target, Settings } from "lucide-react";
+import { LayoutDashboard, Scan, Target, Key, Settings } from "lucide-react";
 
 const navItems = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
   { href: "/dashboard/scans", label: "Scans", icon: Scan },
   { href: "/dashboard/targets", label: "Targets", icon: Target },
+  { href: "/dashboard/api-keys", label: "API Keys", icon: Key },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 

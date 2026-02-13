@@ -1,16 +1,24 @@
-import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
+import { clerkMiddleware } from "@clerk/nextjs/server";
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 
-const isProtectedRoute = createRouteMatcher(["/dashboard(.*)"]);
+// In development, skip Clerk verification for speed
+const isDev = process.env.NODE_ENV === "development";
 
-export default clerkMiddleware(async (auth, req) => {
-  if (isProtectedRoute(req)) {
+export default clerkMiddleware(async (auth, req: NextRequest) => {
+  // Fast path in development - trust the session
+  if (isDev) {
+    return NextResponse.next();
+  }
+
+  // In production, protect dashboard routes
+  if (req.nextUrl.pathname.startsWith("/dashboard")) {
     await auth.protect();
   }
+
+  return NextResponse.next();
 });
 
 export const config = {
-  matcher: [
-    "/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
-    "/(api|trpc)(.*)",
-  ],
+  matcher: ["/dashboard/:path*"],
 };

@@ -1,74 +1,41 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+import { mutate } from "swr";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { api, type Target } from "@/lib/api";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useTargets } from "@/hooks/use-api";
+import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Check, Plus, AlertCircle } from "lucide-react";
 
-const scanModes = [
-  {
-    id: "quick",
-    name: "Quick",
-    description: "Fast scan covering common vulnerabilities",
-    time: "~5 min",
-  },
-  {
-    id: "standard",
-    name: "Standard",
-    description: "Balanced coverage of OWASP Top 10",
-    time: "~15 min",
-  },
-  {
-    id: "deep",
-    name: "Deep",
-    description: "Comprehensive security assessment",
-    time: "~30 min",
-  },
-];
+// Single GOD LEVEL scan mode - does EVERYTHING
+const scanMode = {
+  id: "deep",
+  name: "GOD LEVEL Deep Scan",
+  description: "Comprehensive security assessment. Crawls entire site, tests all injection types (SQLi, XSS, SSRF, CMDi, LFI), authentication bypass, IDOR, and more. Returns REAL vulnerabilities with proof.",
+  time: "~15-20 min",
+};
 
 export default function NewScanPage() {
   const { getToken } = useAuth();
   const router = useRouter();
-  const [targets, setTargets] = useState<Target[]>([]);
-  const [selectedTarget, setSelectedTarget] = useState<string | null>(null);
-  const [selectedMode, setSelectedMode] = useState("standard");
-  const [loading, setLoading] = useState(true);
+  const searchParams = useSearchParams();
+  const preselectedTarget = searchParams.get("target");
+
+  const { data: targets, isLoading: loading } = useTargets();
+  const [selectedTarget, setSelectedTarget] = useState<string | null>(preselectedTarget);
+  const [selectedMode] = useState("deep"); // Only one mode - GOD LEVEL
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // New target form
   const [showNewTarget, setShowNewTarget] = useState(false);
   const [newTargetUrl, setNewTargetUrl] = useState("");
-  const [newTargetName, setNewTargetName] = useState("");
-
-  useEffect(() => {
-    async function loadTargets() {
-      try {
-        const token = await getToken();
-        if (!token) return;
-
-        const data = await api.listTargets(token);
-        setTargets(data);
-
-        // Auto-select first verified target
-        const verified = data.find((t) => t.is_verified);
-        if (verified) {
-          setSelectedTarget(verified.id);
-        }
-      } catch (error) {
-        console.error("Failed to load targets:", error);
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    loadTargets();
-  }, [getToken]);
 
   const handleCreateTarget = async () => {
     if (!newTargetUrl) return;
@@ -77,16 +44,16 @@ export default function NewScanPage() {
       const token = await getToken();
       if (!token) return;
 
+      const url = newTargetUrl.startsWith("http") ? newTargetUrl : `https://${newTargetUrl}`;
       const target = await api.createTarget(token, {
-        url: newTargetUrl,
-        name: newTargetName || new URL(newTargetUrl).hostname,
+        url,
+        name: new URL(url).hostname,
       });
 
-      setTargets([...targets, target]);
+      mutate("targets");
       setSelectedTarget(target.id);
       setShowNewTarget(false);
       setNewTargetUrl("");
-      setNewTargetName("");
     } catch (error) {
       setError(error instanceof Error ? error.message : "Failed to create target");
     }
@@ -98,9 +65,9 @@ export default function NewScanPage() {
       return;
     }
 
-    const target = targets.find((t) => t.id === selectedTarget);
-    if (!target?.is_verified) {
-      setError("Target must be verified before scanning. Go to Targets to verify.");
+    const target = targets?.find((t) => t.id === selectedTarget);
+    if (!target) {
+      setError("Target not found");
       return;
     }
 
@@ -113,9 +80,12 @@ export default function NewScanPage() {
 
       const scan = await api.createScan(token, {
         target_id: selectedTarget,
+        target_url: target.url,
         mode: selectedMode,
       });
 
+      mutate("scans-1");
+      mutate("stats");
       router.push(`/dashboard/scans/${scan.id}`);
     } catch (error) {
       setError(error instanceof Error ? error.message : "Failed to start scan");
@@ -125,8 +95,21 @@ export default function NewScanPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-[#737373]">Loading...</div>
+      <div className="max-w-2xl mx-auto space-y-6">
+        <div>
+          <Skeleton className="h-8 w-32" />
+          <Skeleton className="h-4 w-48 mt-2" />
+        </div>
+        <Card>
+          <CardHeader>
+            <Skeleton className="h-6 w-32" />
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {[...Array(2)].map((_, i) => (
+              <Skeleton key={i} className="h-16 w-full" />
+            ))}
+          </CardContent>
+        </Card>
       </div>
     );
   }
@@ -135,24 +118,25 @@ export default function NewScanPage() {
     <div className="max-w-2xl mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-semibold">New Scan</h1>
-        <p className="text-[#737373] mt-1">Configure and start a security scan</p>
+        <p className="text-[#737373] mt-1">Start a security scan</p>
       </div>
 
       {error && (
         <div className="flex items-center gap-2 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
           <AlertCircle className="w-4 h-4" />
           {error}
+          <button onClick={() => setError(null)} className="ml-auto">×</button>
         </div>
       )}
 
       {/* Target Selection */}
       <Card>
         <CardHeader>
-          <CardTitle>Select Target</CardTitle>
-          <CardDescription>Choose a verified target to scan</CardDescription>
+          <CardTitle>Target</CardTitle>
+          <CardDescription>Select a website to scan</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          {targets.map((target) => (
+          {targets?.map((target) => (
             <button
               key={target.id}
               onClick={() => setSelectedTarget(target.id)}
@@ -167,20 +151,7 @@ export default function NewScanPage() {
                 <div className="font-medium">{target.name}</div>
                 <div className="text-sm text-[#737373]">{target.url}</div>
               </div>
-              <div className="flex items-center gap-2">
-                {target.is_verified ? (
-                  <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded">
-                    Verified
-                  </span>
-                ) : (
-                  <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-1 rounded">
-                    Unverified
-                  </span>
-                )}
-                {selectedTarget === target.id && (
-                  <Check className="w-4 h-4" />
-                )}
-              </div>
+              {selectedTarget === target.id && <Check className="w-4 h-4" />}
             </button>
           ))}
 
@@ -191,22 +162,19 @@ export default function NewScanPage() {
               onClick={() => setShowNewTarget(true)}
             >
               <Plus className="w-4 h-4 mr-2" />
-              Add New Target
+              Add Target
             </Button>
           ) : (
             <div className="space-y-3 p-4 border border-[#e5e5e5] rounded-lg">
               <Input
-                placeholder="https://example.com"
+                placeholder="example.com"
                 value={newTargetUrl}
                 onChange={(e) => setNewTargetUrl(e.target.value)}
-              />
-              <Input
-                placeholder="Target name (optional)"
-                value={newTargetName}
-                onChange={(e) => setNewTargetName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleCreateTarget()}
+                autoFocus
               />
               <div className="flex gap-2">
-                <Button onClick={handleCreateTarget}>Add Target</Button>
+                <Button onClick={handleCreateTarget}>Add</Button>
                 <Button variant="outline" onClick={() => setShowNewTarget(false)}>
                   Cancel
                 </Button>
@@ -216,34 +184,34 @@ export default function NewScanPage() {
         </CardContent>
       </Card>
 
-      {/* Scan Mode */}
+      {/* Scan Mode - Single GOD LEVEL Mode */}
       <Card>
         <CardHeader>
           <CardTitle>Scan Mode</CardTitle>
-          <CardDescription>Choose the depth of the security scan</CardDescription>
+          <CardDescription>One mode. Everything. God level.</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
-          {scanModes.map((mode) => (
-            <button
-              key={mode.id}
-              onClick={() => setSelectedMode(mode.id)}
-              className={cn(
-                "w-full flex items-center justify-between p-4 border rounded-lg text-left transition-colors",
-                selectedMode === mode.id
-                  ? "border-black bg-[#f5f5f5]"
-                  : "border-[#e5e5e5] hover:bg-[#fafafa]"
-              )}
-            >
+        <CardContent>
+          <div className="w-full p-4 border-2 border-black bg-[#f5f5f5] rounded-lg">
+            <div className="flex items-center justify-between">
               <div>
-                <div className="font-medium">{mode.name}</div>
-                <div className="text-sm text-[#737373]">{mode.description}</div>
+                <div className="font-bold text-lg">{scanMode.name}</div>
+                <div className="text-sm text-[#737373] mt-1">{scanMode.description}</div>
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-sm text-[#737373]">{mode.time}</span>
-                {selectedMode === mode.id && <Check className="w-4 h-4" />}
+                <span className="text-sm font-medium bg-black text-white px-2 py-1 rounded">{scanMode.time}</span>
+                <Check className="w-5 h-5" />
               </div>
-            </button>
-          ))}
+            </div>
+            <div className="mt-3 pt-3 border-t border-[#e5e5e5]">
+              <div className="text-xs text-[#737373] space-y-1">
+                <div>• Full website crawl (500+ pages)</div>
+                <div>• SQL Injection, XSS, SSRF, Command Injection, LFI</div>
+                <div>• Authentication bypass & JWT attacks</div>
+                <div>• IDOR & privilege escalation</div>
+                <div>• Real proof with sample data & curl commands</div>
+              </div>
+            </div>
+          </div>
         </CardContent>
       </Card>
 
@@ -254,7 +222,7 @@ export default function NewScanPage() {
         onClick={handleStartScan}
         disabled={submitting || !selectedTarget}
       >
-        {submitting ? "Starting Scan..." : "Start Scan"}
+        {submitting ? "Starting..." : "Start Scan"}
       </Button>
     </div>
   );

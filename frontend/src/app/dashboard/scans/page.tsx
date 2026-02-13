@@ -1,45 +1,48 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useAuth } from "@clerk/nextjs";
+import { useState } from "react";
 import Link from "next/link";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { api, type Scan } from "@/lib/api";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useScans } from "@/hooks/use-api";
 import { formatDate, formatDuration } from "@/lib/utils";
 import { Plus, ExternalLink } from "lucide-react";
 
 export default function ScansPage() {
-  const { getToken } = useAuth();
-  const [scans, setScans] = useState<Scan[]>([]);
-  const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
-  const [total, setTotal] = useState(0);
+  const { data, isLoading: loading } = useScans(page);
 
-  useEffect(() => {
-    async function loadScans() {
-      try {
-        const token = await getToken();
-        if (!token) return;
-
-        const data = await api.listScans(token, page);
-        setScans(data.items);
-        setTotal(data.total);
-      } catch (error) {
-        console.error("Failed to load scans:", error);
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    loadScans();
-  }, [getToken, page]);
+  const scans = data?.items || [];
+  const total = data?.total || 0;
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-[#737373]">Loading...</div>
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <Skeleton className="h-8 w-20" />
+            <Skeleton className="h-4 w-32 mt-2" />
+          </div>
+          <Skeleton className="h-10 w-28" />
+        </div>
+        <div className="space-y-3">
+          {[...Array(5)].map((_, i) => (
+            <Card key={i} className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <Skeleton className="h-5 w-48" />
+                  <Skeleton className="h-4 w-64 mt-2" />
+                </div>
+                <div className="flex items-center gap-3">
+                  <Skeleton className="h-8 w-20" />
+                  <Skeleton className="h-6 w-16 rounded-full" />
+                </div>
+              </div>
+            </Card>
+          ))}
+        </div>
       </div>
     );
   }
@@ -90,16 +93,13 @@ export default function ScansPage() {
                       <div className="text-sm font-medium">{scan.findings_count} findings</div>
                       <div className="flex items-center gap-2 mt-1">
                         {scan.critical_count > 0 && (
-                          <span className="text-xs severity-critical">{scan.critical_count}C</span>
+                          <span className="text-xs text-red-600 font-medium">{scan.critical_count}C</span>
                         )}
                         {scan.high_count > 0 && (
-                          <span className="text-xs severity-high">{scan.high_count}H</span>
+                          <span className="text-xs text-orange-600 font-medium">{scan.high_count}H</span>
                         )}
                         {scan.medium_count > 0 && (
-                          <span className="text-xs severity-medium">{scan.medium_count}M</span>
-                        )}
-                        {scan.low_count > 0 && (
-                          <span className="text-xs severity-low">{scan.low_count}L</span>
+                          <span className="text-xs text-yellow-600 font-medium">{scan.medium_count}M</span>
                         )}
                       </div>
                     </div>

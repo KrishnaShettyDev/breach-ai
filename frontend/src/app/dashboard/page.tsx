@@ -1,48 +1,51 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { api, type Scan, type ScanStats } from "@/lib/api";
-import { formatDate, formatDuration } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useStats, useScans } from "@/hooks/use-api";
+import { formatDate, formatDuration } from "@/lib/utils";
 import { Plus, ArrowRight } from "lucide-react";
 
 export default function DashboardPage() {
-  const { getToken } = useAuth();
-  const [stats, setStats] = useState<ScanStats | null>(null);
-  const [recentScans, setRecentScans] = useState<Scan[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { data: stats, isLoading: statsLoading } = useStats();
+  const { data: scansData, isLoading: scansLoading } = useScans(1);
 
-  useEffect(() => {
-    async function loadData() {
-      try {
-        const token = await getToken();
-        if (!token) return;
-
-        const [statsData, scansData] = await Promise.all([
-          api.getStats(token),
-          api.listScans(token, 1),
-        ]);
-
-        setStats(statsData);
-        setRecentScans(scansData.items.slice(0, 5));
-      } catch (error) {
-        console.error("Failed to load dashboard data:", error);
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    loadData();
-  }, [getToken]);
+  const loading = statsLoading || scansLoading;
+  const recentScans = scansData?.items.slice(0, 5) || [];
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-[#737373]">Loading...</div>
+      <div className="space-y-8">
+        <div className="flex items-center justify-between">
+          <div>
+            <Skeleton className="h-8 w-32" />
+            <Skeleton className="h-4 w-48 mt-2" />
+          </div>
+          <Skeleton className="h-10 w-28" />
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {[...Array(4)].map((_, i) => (
+            <Card key={i}>
+              <CardContent className="pt-6">
+                <Skeleton className="h-9 w-16" />
+                <Skeleton className="h-4 w-24 mt-2" />
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+        <Card>
+          <CardHeader>
+            <Skeleton className="h-6 w-32" />
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {[...Array(3)].map((_, i) => (
+              <Skeleton key={i} className="h-16 w-full" />
+            ))}
+          </CardContent>
+        </Card>
       </div>
     );
   }

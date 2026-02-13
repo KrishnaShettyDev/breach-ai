@@ -1,86 +1,56 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useAuth } from "@clerk/nextjs";
+import { mutate } from "swr";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import { api, type Target } from "@/lib/api";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useTargets } from "@/hooks/use-api";
+import { api } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
-import { Plus, Trash2, CheckCircle, AlertCircle, Copy, ExternalLink } from "lucide-react";
+import { Plus, Trash2, CheckCircle, AlertCircle, ExternalLink } from "lucide-react";
+import Link from "next/link";
 
 export default function TargetsPage() {
   const { getToken } = useAuth();
-  const [targets, setTargets] = useState<Target[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { data: targets, isLoading: loading } = useTargets();
   const [showNew, setShowNew] = useState(false);
   const [newUrl, setNewUrl] = useState("");
   const [newName, setNewName] = useState("");
-  const [verifying, setVerifying] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-
-  useEffect(() => {
-    loadTargets();
-  }, []);
-
-  async function loadTargets() {
-    try {
-      const token = await getToken();
-      if (!token) return;
-
-      const data = await api.listTargets(token);
-      setTargets(data);
-    } catch (error) {
-      console.error("Failed to load targets:", error);
-    } finally {
-      setLoading(false);
-    }
-  }
+  const [creating, setCreating] = useState(false);
 
   const handleCreate = async () => {
-    if (!newUrl) return;
-
-    try {
-      const token = await getToken();
-      if (!token) return;
-
-      const target = await api.createTarget(token, {
-        url: newUrl,
-        name: newName || new URL(newUrl).hostname,
-      });
-
-      setTargets([...targets, target]);
-      setShowNew(false);
-      setNewUrl("");
-      setNewName("");
-      setSuccess("Target created. Verify ownership to start scanning.");
-    } catch (error) {
-      setError(error instanceof Error ? error.message : "Failed to create target");
+    if (!newUrl) {
+      setError("Please enter a URL");
+      return;
     }
-  };
 
-  const handleVerify = async (targetId: string) => {
-    setVerifying(targetId);
+    setCreating(true);
     setError(null);
 
     try {
       const token = await getToken();
       if (!token) return;
 
-      const result = await api.verifyTarget(token, targetId, "dns");
+      await api.createTarget(token, {
+        url: newUrl.startsWith("http") ? newUrl : `https://${newUrl}`,
+        name: newName || new URL(newUrl.startsWith("http") ? newUrl : `https://${newUrl}`).hostname,
+      });
 
-      if (result.success) {
-        setSuccess("Target verified successfully!");
-        loadTargets();
-      } else {
-        setError(result.message);
-      }
+      // Revalidate the cache
+      mutate("targets");
+      setShowNew(false);
+      setNewUrl("");
+      setNewName("");
+      setSuccess("Target added!");
     } catch (error) {
-      setError(error instanceof Error ? error.message : "Verification failed");
+      setError(error instanceof Error ? error.message : "Failed to add target");
     } finally {
-      setVerifying(null);
+      setCreating(false);
     }
   };
 
@@ -92,23 +62,33 @@ export default function TargetsPage() {
       if (!token) return;
 
       await api.deleteTarget(token, targetId);
-      setTargets(targets.filter((t) => t.id !== targetId));
+      mutate("targets");
       setSuccess("Target deleted");
     } catch (error) {
       setError(error instanceof Error ? error.message : "Failed to delete target");
     }
   };
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    setSuccess("Copied to clipboard");
-    setTimeout(() => setSuccess(null), 2000);
-  };
-
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-[#737373]">Loading...</div>
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <Skeleton className="h-8 w-24" />
+            <Skeleton className="h-4 w-40 mt-2" />
+          </div>
+          <Skeleton className="h-10 w-28" />
+        </div>
+        <div className="space-y-3">
+          {[...Array(3)].map((_, i) => (
+            <Card key={i}>
+              <CardContent className="pt-6">
+                <Skeleton className="h-6 w-48" />
+                <Skeleton className="h-4 w-64 mt-2" />
+              </CardContent>
+            </Card>
+          ))}
+        </div>
       </div>
     );
   }
@@ -119,7 +99,7 @@ export default function TargetsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Targets</h1>
-          <p className="text-[#737373] mt-1">Manage your scan targets</p>
+          <p className="text-[#737373] mt-1">Add websites to scan</p>
         </div>
         <Button onClick={() => setShowNew(true)}>
           <Plus className="w-4 h-4 mr-2" />
@@ -130,16 +110,16 @@ export default function TargetsPage() {
       {/* Messages */}
       {error && (
         <div className="flex items-center gap-2 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
-          <AlertCircle className="w-4 h-4" />
-          {error}
-          <button onClick={() => setError(null)} className="ml-auto text-red-500 hover:text-red-700">×</button>
+          <AlertCircle className="w-4 h-4 flex-shrink-0" />
+          <span className="flex-1">{error}</span>
+          <button onClick={() => setError(null)} className="text-red-500 hover:text-red-700">×</button>
         </div>
       )}
       {success && (
         <div className="flex items-center gap-2 p-4 bg-green-50 border border-green-200 rounded-lg text-green-700">
-          <CheckCircle className="w-4 h-4" />
-          {success}
-          <button onClick={() => setSuccess(null)} className="ml-auto text-green-500 hover:text-green-700">×</button>
+          <CheckCircle className="w-4 h-4 flex-shrink-0" />
+          <span className="flex-1">{success}</span>
+          <button onClick={() => setSuccess(null)} className="text-green-500 hover:text-green-700">×</button>
         </div>
       )}
 
@@ -147,23 +127,27 @@ export default function TargetsPage() {
       {showNew && (
         <Card>
           <CardHeader>
-            <CardTitle>Add New Target</CardTitle>
-            <CardDescription>Enter the URL of the application you want to scan</CardDescription>
+            <CardTitle>Add Target</CardTitle>
+            <CardDescription>Enter the URL you want to scan</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <Input
-              placeholder="https://example.com"
+              placeholder="example.com"
               value={newUrl}
               onChange={(e) => setNewUrl(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+              autoFocus
             />
             <Input
-              placeholder="Target name (optional)"
+              placeholder="Name (optional)"
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
             />
             <div className="flex gap-2">
-              <Button onClick={handleCreate}>Add Target</Button>
-              <Button variant="outline" onClick={() => setShowNew(false)}>
+              <Button onClick={handleCreate} disabled={creating}>
+                {creating ? "Adding..." : "Add"}
+              </Button>
+              <Button variant="outline" onClick={() => { setShowNew(false); setNewUrl(""); setNewName(""); }}>
                 Cancel
               </Button>
             </div>
@@ -172,78 +156,44 @@ export default function TargetsPage() {
       )}
 
       {/* Targets List */}
-      {targets.length === 0 ? (
+      {(!targets || targets.length === 0) && !showNew ? (
         <Card className="p-12 text-center">
           <p className="text-[#737373] mb-4">No targets yet</p>
           <Button onClick={() => setShowNew(true)}>Add your first target</Button>
         </Card>
       ) : (
-        <div className="space-y-4">
-          {targets.map((target) => (
-            <Card key={target.id}>
+        <div className="space-y-3">
+          {targets?.map((target) => (
+            <Card key={target.id} className="hover:bg-[#fafafa] transition-colors">
               <CardContent className="pt-6">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="font-semibold">{target.name}</h3>
-                      {target.is_verified ? (
-                        <Badge className="bg-green-100 text-green-700">Verified</Badge>
-                      ) : (
-                        <Badge className="bg-yellow-100 text-yellow-700">Unverified</Badge>
-                      )}
-                    </div>
+                <div className="flex items-center justify-between">
+                  <div className="min-w-0 flex-1">
+                    <h3 className="font-semibold truncate">{target.name}</h3>
                     <a
                       href={target.url}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-sm text-[#737373] hover:text-black flex items-center gap-1 mt-1"
                     >
-                      {target.url}
-                      <ExternalLink className="w-3 h-3" />
+                      <span className="truncate">{target.url}</span>
+                      <ExternalLink className="w-3 h-3 flex-shrink-0" />
                     </a>
-                    <p className="text-sm text-[#737373] mt-2">Added {formatDate(target.created_at)}</p>
+                    <p className="text-xs text-[#a3a3a3] mt-2">Added {formatDate(target.created_at)}</p>
                   </div>
-                  <div className="flex items-center gap-2">
-                    {!target.is_verified && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleVerify(target.id)}
-                        disabled={verifying === target.id}
-                      >
-                        {verifying === target.id ? "Verifying..." : "Verify"}
-                      </Button>
-                    )}
+                  <div className="flex items-center gap-2 ml-4">
+                    <Link href={`/dashboard/scans/new?target=${target.id}`}>
+                      <Button size="sm">Scan</Button>
+                    </Link>
                     <Button
                       variant="ghost"
                       size="sm"
                       onClick={() => handleDelete(target.id)}
+                      className="text-[#737373] hover:text-red-600"
                     >
                       <Trash2 className="w-4 h-4" />
                     </Button>
                   </div>
                 </div>
-
-                {!target.is_verified && (
-                  <div className="mt-4 p-4 bg-[#f5f5f5] rounded-lg">
-                    <p className="text-sm font-medium mb-2">Verification Instructions</p>
-                    <p className="text-sm text-[#737373] mb-3">
-                      Add a DNS TXT record to verify ownership:
-                    </p>
-                    <div className="flex items-center gap-2 bg-white p-2 rounded border border-[#e5e5e5]">
-                      <code className="text-xs flex-1 truncate">
-                        _breach-verify.{new URL(target.url).hostname} TXT "{target.verification_token}"
-                      </code>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => copyToClipboard(target.verification_token)}
-                      >
-                        <Copy className="w-3 h-3" />
-                      </Button>
-                    </div>
-                  </div>
-                )}
               </CardContent>
             </Card>
           ))}
