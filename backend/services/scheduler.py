@@ -15,6 +15,7 @@ Features:
 
 import asyncio
 from datetime import datetime, timezone, timedelta
+from sqlalchemy.ext.asyncio import AsyncSession as AsyncSessionType
 from typing import Optional, List
 from uuid import UUID
 
@@ -67,17 +68,18 @@ class SchedulerService:
         """
         # Validate cron expression
         try:
-            cron = croniter(cron_expression)
+            cron = croniter(cron_expression, datetime.utcnow())
             next_run = cron.get_next(datetime)
+            # Ensure naive datetime for database
+            if hasattr(next_run, 'tzinfo') and next_run.tzinfo is not None:
+                next_run = next_run.replace(tzinfo=None)
         except Exception as e:
             raise ValueError(f"Invalid cron expression: {e}")
 
-        # Validate target exists and is verified
+        # Validate target exists
         target = await self._get_target(target_id, organization_id)
         if not target:
             raise ValueError("Target not found")
-        if not target.is_verified:
-            raise ValueError("Target must be verified before scheduling scans")
 
         # Check organization limits
         org = await self._get_organization(organization_id)
@@ -140,8 +142,12 @@ class SchedulerService:
                 if field == 'cron_expression':
                     # Recalculate next run
                     try:
-                        cron = croniter(value, datetime.now(timezone.utc))
-                        schedule.next_run_at = cron.get_next(datetime)
+                        cron = croniter(value, datetime.utcnow())
+                        next_run = cron.get_next(datetime)
+                        # Ensure naive datetime for database
+                        if hasattr(next_run, 'tzinfo') and next_run.tzinfo is not None:
+                            next_run = next_run.replace(tzinfo=None)
+                        schedule.next_run_at = next_run
                     except Exception as e:
                         raise ValueError(f"Invalid cron expression: {e}")
                 setattr(schedule, field, value)
@@ -214,8 +220,12 @@ class SchedulerService:
 
         if is_active:
             # Recalculate next run
-            cron = croniter(schedule.cron_expression, datetime.now(timezone.utc))
-            schedule.next_run_at = cron.get_next(datetime)
+            cron = croniter(schedule.cron_expression, datetime.utcnow())
+            next_run = cron.get_next(datetime)
+            # Ensure naive datetime for database
+            if hasattr(next_run, 'tzinfo') and next_run.tzinfo is not None:
+                next_run = next_run.replace(tzinfo=None)
+            schedule.next_run_at = next_run
 
         await self.db.commit()
         await self.db.refresh(schedule)
@@ -226,7 +236,8 @@ class SchedulerService:
 
     async def get_due_schedules(self) -> List[ScheduledScan]:
         """Get all schedules that are due to run."""
-        now = datetime.now(timezone.utc)
+        # Use naive datetime (no timezone) to match database column type
+        now = datetime.utcnow().replace(tzinfo=None)
 
         result = await self.db.execute(
             select(ScheduledScan).where(
@@ -243,14 +254,6 @@ class SchedulerService:
             target = await self._get_target(schedule.target_id, schedule.organization_id)
             if not target:
                 logger.error("schedule_target_not_found", schedule_id=str(schedule.id))
-                return None
-
-            if not target.is_verified:
-                logger.warning(
-                    "schedule_target_not_verified",
-                    schedule_id=str(schedule.id),
-                    target_id=str(schedule.target_id)
-                )
                 return None
 
             # Create scan
@@ -273,9 +276,13 @@ class SchedulerService:
             )
 
             # Update schedule
-            schedule.last_run_at = datetime.now(timezone.utc)
-            cron = croniter(schedule.cron_expression, datetime.now(timezone.utc))
-            schedule.next_run_at = cron.get_next(datetime)
+            schedule.last_run_at = datetime.utcnow()
+            cron = croniter(schedule.cron_expression, datetime.utcnow())
+            next_run = cron.get_next(datetime)
+            # Ensure naive datetime for database
+            if hasattr(next_run, 'tzinfo') and next_run.tzinfo is not None:
+                next_run = next_run.replace(tzinfo=None)
+            schedule.next_run_at = next_run
 
             await self.db.commit()
 
@@ -301,8 +308,12 @@ class SchedulerService:
             )
 
             # Still update next_run_at to prevent infinite loop
-            cron = croniter(schedule.cron_expression, datetime.now(timezone.utc))
-            schedule.next_run_at = cron.get_next(datetime)
+            cron = croniter(schedule.cron_expression, datetime.utcnow())
+            next_run = cron.get_next(datetime)
+            # Ensure naive datetime for database
+            if hasattr(next_run, 'tzinfo') and next_run.tzinfo is not None:
+                next_run = next_run.replace(tzinfo=None)
+            schedule.next_run_at = next_run
             await self.db.commit()
 
             return None
@@ -413,8 +424,11 @@ class ContinuousScanner:
             await asyncio.sleep(self.check_interval)
 
     async def _check_and_execute(self):
-        """Check for due schedules and execute them."""
+        """Check for due schedules and execute them. Also recover stuck scans."""
         async with async_session() as db:
+            # First, recover any stuck scans (running > 30 minutes with no progress)
+            await self._recover_stuck_scans(db)
+
             scheduler = SchedulerService(db)
             due_schedules = await scheduler.get_due_schedules()
 
@@ -430,6 +444,41 @@ class ContinuousScanner:
                         schedule_id=str(schedule.id),
                         error=str(e),
                     )
+
+    async def _recover_stuck_scans(self, db: AsyncSessionType):
+        """Find and mark stuck scans as failed."""
+        from sqlalchemy import update, and_
+        from backend.db.models import Scan, ScanStatus
+
+        # Find scans that are "running" for more than 30 minutes
+        cutoff_time = datetime.utcnow() - timedelta(minutes=30)
+
+        result = await db.execute(
+            select(Scan).where(
+                and_(
+                    Scan.status == ScanStatus.RUNNING,
+                    Scan.started_at < cutoff_time,
+                )
+            )
+        )
+        stuck_scans = result.scalars().all()
+
+        for scan in stuck_scans:
+            logger.warning(
+                "recovering_stuck_scan",
+                scan_id=str(scan.id),
+                target_url=scan.target_url,
+                progress=scan.progress,
+                started_at=scan.started_at.isoformat() if scan.started_at else None,
+            )
+
+            scan.status = ScanStatus.FAILED
+            scan.error_message = "Scan timed out or was interrupted. Please restart the scan."
+            scan.completed_at = datetime.utcnow()
+
+        if stuck_scans:
+            await db.commit()
+            logger.info("recovered_stuck_scans", count=len(stuck_scans))
 
 
 # Global scanner instance

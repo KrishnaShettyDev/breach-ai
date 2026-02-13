@@ -4,6 +4,7 @@ BREACH.AI - API Dependencies (Clerk)
 FastAPI dependencies for Clerk authentication.
 """
 
+import structlog
 from typing import Optional, Tuple
 from uuid import UUID
 
@@ -14,6 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.db.database import get_db
 from backend.db.models import User, Organization, OrganizationMember
 from backend.services.auth import AuthService
+
+logger = structlog.get_logger(__name__)
 
 # Security
 security = HTTPBearer(auto_error=False)
@@ -33,12 +36,15 @@ async def get_current_user(
 
     # Try API key first (for programmatic access)
     if x_api_key:
-        result = await auth_service.validate_api_key(x_api_key)
-        if result:
-            api_key, org = result
-            user = await auth_service.get_user_by_id(api_key.created_by)
-            if user:
-                return user, org
+        try:
+            result = await auth_service.validate_api_key(x_api_key)
+            if result:
+                api_key, org = result
+                user = await auth_service.get_user_by_id(api_key.created_by)
+                if user:
+                    return user, org
+        except Exception as e:
+            logger.error("api_key_validation_error", error=str(e), exc_info=True)
 
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -47,21 +53,31 @@ async def get_current_user(
 
     # Try Clerk token
     if credentials:
-        payload = await auth_service.verify_clerk_token(credentials.credentials)
+        try:
+            payload = await auth_service.verify_clerk_token(credentials.credentials)
 
-        if payload:
-            clerk_user_id = payload.get("sub")
-            email = payload.get("email") or payload.get("primary_email_address", "")
-            name = payload.get("name") or payload.get("first_name", "")
+            if payload:
+                clerk_user_id = payload.get("sub")
+                email = payload.get("email") or payload.get("primary_email_address", "")
+                name = payload.get("name") or payload.get("first_name", "")
 
-            if clerk_user_id:
-                user, org = await auth_service.get_or_create_user_from_clerk(
-                    clerk_user_id=clerk_user_id,
-                    email=email,
-                    name=name,
-                )
-                return user, org
+                if clerk_user_id:
+                    user, org = await auth_service.get_or_create_user_from_clerk(
+                        clerk_user_id=clerk_user_id,
+                        email=email,
+                        name=name,
+                    )
+                    logger.debug("auth_success", user_id=str(user.id), org_id=str(org.id))
+                    return user, org
+                else:
+                    logger.warning("clerk_token_no_sub", payload_keys=list(payload.keys()))
+            else:
+                logger.warning("clerk_token_verification_returned_none")
+        except Exception as e:
+            logger.error("clerk_auth_error", error=str(e), exc_info=True)
+            # Don't re-raise, fall through to 401
 
+    logger.warning("auth_failed", has_credentials=bool(credentials), has_api_key=bool(x_api_key))
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Not authenticated",

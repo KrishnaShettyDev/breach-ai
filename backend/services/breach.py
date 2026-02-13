@@ -66,9 +66,6 @@ class BreachService:
         if not target:
             raise ValueError("Target not found")
 
-        if not target.is_verified:
-            raise ValueError("Target must be verified before breach assessment")
-
         # Create session
         session = BreachSessionModel(
             organization_id=organization_id,

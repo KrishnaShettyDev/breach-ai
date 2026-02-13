@@ -168,7 +168,7 @@ async def recover_stale_scans():
     try:
         from sqlalchemy import select, update
 
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=2)
+        cutoff = datetime.utcnow() - timedelta(hours=2)
 
         async with async_session() as session:
             # Find stale scans
@@ -188,7 +188,7 @@ async def recover_stale_scans():
                     ).values(
                         status=ScanStatus.FAILED,
                         error_message="Scan timed out or server restarted",
-                        completed_at=datetime.now(timezone.utc)
+                        completed_at=datetime.utcnow()
                     )
                 )
                 await session.commit()
@@ -370,33 +370,23 @@ async def org_context_middleware(request: Request, call_next):
     Extract organization context for rate limiting.
     This middleware runs early to set request.state.organization_id
     which is then used by the rate limiter.
-    """
-    import hashlib
 
+    NOTE: We don't do database lookups here to avoid async context issues
+    when background scans are running. Rate limiting falls back to IP-based
+    for unauthenticated requests, and the auth layer sets org context later.
+    """
     # Initialize state
     if not hasattr(request.state, "organization_id"):
         request.state.organization_id = None
 
-    # Try to extract org from API key (faster than full auth)
+    # Use API key prefix for rate limiting identification (no DB lookup)
+    # The full validation happens in the auth layer
     api_key = request.headers.get("X-API-Key", "")
-    if api_key:
-        try:
-            key_hash = hashlib.sha256(api_key.encode()).hexdigest()
-            async with async_session() as session:
-                from sqlalchemy import select
-                from backend.db.models import APIKey
-                result = await session.execute(
-                    select(APIKey.organization_id).where(
-                        APIKey.key_hash == key_hash,
-                        APIKey.is_active == True
-                    )
-                )
-                row = result.first()
-                if row:
-                    request.state.organization_id = str(row[0])
-        except Exception as e:
-            # Don't let org extraction failures break the request
-            logger.debug("org_context_extraction_failed", error=str(e))
+    if api_key and api_key.startswith("breach_"):
+        # Use a hash of the API key for rate limit grouping (without DB lookup)
+        import hashlib
+        key_id = hashlib.sha256(api_key.encode()).hexdigest()[:16]
+        request.state.organization_id = f"apikey:{key_id}"
 
     try:
         response = await call_next(request)
@@ -404,9 +394,18 @@ async def org_context_middleware(request: Request, call_next):
     except Exception as e:
         # Catch any middleware chain errors
         logger.error("middleware_error", error=str(e), path=request.url.path)
+        # Include CORS headers in error response
+        origin = request.headers.get("origin", "")
+        headers = {}
+        if origin and (origin in settings.cors_origins or "*" in settings.cors_origins):
+            headers = {
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Credentials": "true",
+            }
         return JSONResponse(
             status_code=500,
-            content={"error": "Internal server error"}
+            content={"error": "Internal server error"},
+            headers=headers
         )
 
 
@@ -514,7 +513,7 @@ async def health_deep():
             "service": "BREACH.AI",
             "version": "4.0.0",
             "checks": checks,
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "timestamp": datetime.utcnow().isoformat()
         }
     )
 

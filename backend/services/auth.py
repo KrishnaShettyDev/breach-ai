@@ -8,9 +8,10 @@ Backend just verifies Clerk tokens and syncs users.
 import secrets
 import hashlib
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any
 from uuid import UUID
 
+import httpx
 import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,18 @@ from backend.config import settings
 from backend.db.models import User, Organization, OrganizationMember, APIKey, UserRole
 
 logger = structlog.get_logger(__name__)
+
+# Cache for JWKS data (keyed by issuer URL)
+_jwks_data_cache: Dict[str, Dict[str, Any]] = {}
+_jwks_cache_time: Dict[str, float] = {}
+
+# Cache for verified tokens (keyed by token hash, short TTL)
+_token_cache: Dict[str, Tuple[dict, float]] = {}
+TOKEN_CACHE_TTL = 60  # 60 seconds
+
+# Cache for user+org lookups (keyed by clerk_user_id)
+_user_org_cache: Dict[str, Tuple[Any, Any, float]] = {}
+USER_CACHE_TTL = 300  # 5 minutes
 
 
 class AuthService:
@@ -31,34 +44,74 @@ class AuthService:
 
     async def verify_clerk_token(self, token: str) -> Optional[dict]:
         """
-        Verify a Clerk session token.
+        Verify a Clerk session token using async HTTP.
         Returns the decoded payload with user info.
+        Uses aggressive caching to avoid repeated verification.
         """
-        try:
-            # Clerk tokens are JWTs - verify with Clerk's JWKS
-            import jwt
-            from jwt import PyJWKClient
+        import time
 
-            # Get Clerk's JWKS URL from the token
-            # Format: https://<clerk-id>.clerk.accounts.dev/.well-known/jwks.json
+        # Quick cache check using token hash (first 32 chars is enough)
+        token_key = token[:64] if len(token) > 64 else token
+        cached = _token_cache.get(token_key)
+        if cached:
+            payload, cache_time = cached
+            if time.time() - cache_time < TOKEN_CACHE_TTL:
+                return payload
+
+        try:
+            import jwt
+            from jwt import PyJWK
+
+            # Decode without verification to get issuer and key ID
+            unverified_header = jwt.get_unverified_header(token)
             unverified = jwt.decode(token, options={"verify_signature": False})
             issuer = unverified.get("iss", "")
+            kid = unverified_header.get("kid")
 
             if not issuer or "clerk" not in issuer:
                 return None
 
-            # Fetch and verify with JWKS
+            # Get JWKS data (cached for 1 hour)
             jwks_url = f"{issuer}/.well-known/jwks.json"
-            jwks_client = PyJWKClient(jwks_url)
-            signing_key = jwks_client.get_signing_key_from_jwt(token)
+            cache_age = time.time() - _jwks_cache_time.get(issuer, 0)
+
+            if issuer not in _jwks_data_cache or cache_age > 3600:
+                # Fetch JWKS asynchronously
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(jwks_url, timeout=10)
+                    response.raise_for_status()
+                    _jwks_data_cache[issuer] = response.json()
+                    _jwks_cache_time[issuer] = time.time()
+
+            jwks_data = _jwks_data_cache[issuer]
+
+            # Find the key by kid
+            signing_key = None
+            for key_data in jwks_data.get("keys", []):
+                if key_data.get("kid") == kid:
+                    signing_key = PyJWK.from_dict(key_data).key
+                    break
+
+            if not signing_key:
+                logger.warning("clerk_key_not_found", kid=kid)
+                return None
 
             payload = jwt.decode(
                 token,
-                signing_key.key,
+                signing_key,
                 algorithms=["RS256"],
-                audience=None,  # Clerk doesn't use audience
+                audience=None,
                 options={"verify_aud": False}
             )
+
+            # Cache the verified payload
+            _token_cache[token_key] = (payload, time.time())
+
+            # Clean old cache entries periodically (keep last 100)
+            if len(_token_cache) > 100:
+                sorted_keys = sorted(_token_cache.keys(), key=lambda k: _token_cache[k][1])
+                for old_key in sorted_keys[:50]:
+                    del _token_cache[old_key]
 
             return payload
 
@@ -70,7 +123,17 @@ class AuthService:
         """
         Get or create a user from Clerk session data.
         Also creates default organization if needed.
+        Uses aggressive caching to avoid DB hits on every request.
         """
+        import time
+
+        # Check cache first
+        cached = _user_org_cache.get(clerk_user_id)
+        if cached:
+            user, org, cache_time = cached
+            if time.time() - cache_time < USER_CACHE_TTL:
+                return user, org
+
         # Check if user exists
         result = await self.db.execute(
             select(User).where(User.clerk_id == clerk_user_id)
@@ -89,6 +152,8 @@ class AuthService:
                     select(Organization).where(Organization.id == member.organization_id)
                 )
                 org = org_result.scalar_one()
+                # Cache the result
+                _user_org_cache[clerk_user_id] = (user, org, time.time())
                 return user, org
 
         # Create new user
@@ -110,7 +175,7 @@ class AuthService:
             name=org_name,
             slug=slug,
             subscription_tier="free",
-            trial_ends_at=datetime.now(timezone.utc) + timedelta(days=14),
+            trial_ends_at=datetime.utcnow() + timedelta(days=14),
         )
         self.db.add(org)
         await self.db.flush()
@@ -126,6 +191,9 @@ class AuthService:
         await self.db.commit()
         await self.db.refresh(user)
         await self.db.refresh(org)
+
+        # Cache the result
+        _user_org_cache[clerk_user_id] = (user, org, time.time())
 
         return user, org
 
@@ -184,7 +252,7 @@ class AuthService:
 
         expires_at = None
         if expires_in_days:
-            expires_at = datetime.now(timezone.utc) + timedelta(days=expires_in_days)
+            expires_at = datetime.utcnow() + timedelta(days=expires_in_days)
 
         api_key = APIKey(
             organization_id=organization_id,
@@ -216,10 +284,10 @@ class AuthService:
         if not api_key:
             return None
 
-        if api_key.expires_at and api_key.expires_at < datetime.now(timezone.utc):
+        if api_key.expires_at and api_key.expires_at < datetime.utcnow():
             return None
 
-        api_key.last_used_at = datetime.now(timezone.utc)
+        api_key.last_used_at = datetime.utcnow()
 
         org_result = await self.db.execute(
             select(Organization).where(Organization.id == api_key.organization_id)

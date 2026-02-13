@@ -25,7 +25,7 @@ engine_kwargs = {
     "echo": settings.debug,
 }
 
-# PostgreSQL-specific settings (async engine uses AsyncAdaptedQueuePool automatically)
+# PostgreSQL-specific settings
 if DATABASE_URL.startswith("postgresql"):
     engine_kwargs.update({
         "pool_pre_ping": True,
@@ -33,6 +33,13 @@ if DATABASE_URL.startswith("postgresql"):
         "max_overflow": 20,
         "pool_timeout": 30,
         "pool_recycle": 1800,  # Recycle connections after 30 minutes
+    })
+# SQLite-specific settings - use NullPool to avoid connection sharing issues
+elif "sqlite" in DATABASE_URL:
+    from sqlalchemy.pool import NullPool
+    engine_kwargs.update({
+        "poolclass": NullPool,
+        "connect_args": {"check_same_thread": False},
     })
 
 engine = create_async_engine(DATABASE_URL, **engine_kwargs)
