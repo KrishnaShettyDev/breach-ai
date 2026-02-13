@@ -2,6 +2,11 @@
 .claude/
 .claude-*
 
+# Local reports and plans (not for version control)
+*_REPORT.md
+*_PLAN.md
+GOD_LEVEL_*.md
+
 # Python
 __pycache__/
 *.py[cod]
