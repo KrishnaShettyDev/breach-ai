@@ -1,517 +1,232 @@
-# BREACH.AI
+# BREACH
 
-<div align="center">
+**Autonomous Security Scanner with Proof-by-Exploitation**
 
-**Autonomous AI-Powered Penetration Testing Platform**
+BREACH is an AI-powered security scanner that goes beyond detection - it proves vulnerabilities by safely exploiting them. Unlike traditional scanners that generate false positives, BREACH provides concrete evidence of exploitability.
 
-*"We hack you before they do."*
+## Features
 
-[![Python 3.11+](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![Next.js 14](https://img.shields.io/badge/Next.js-14-black.svg)](https://nextjs.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)](https://fastapi.tiangolo.com/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
-</div>
-
----
-
-## Overview
-
-BREACH.AI is an enterprise-grade autonomous security assessment platform that uses AI-powered decision making to conduct comprehensive penetration tests. Unlike traditional scanners that check for known vulnerabilities, BREACH.AI thinks like a real attacker—chaining vulnerabilities, escalating privileges, and proving complete compromise.
-
-### Two Ways to Use
-
-| Mode | Description |
-|------|-------------|
-| **CLI Tool** | Standalone command-line scanner for quick assessments |
-| **Web Platform** | Full SaaS with dashboard, team management, and billing |
-
----
-
-## Key Features
-
-### AI-Powered Intelligence
-- **Claude-based Decision Engine** - Makes strategic attack decisions like a human pentester
-- **Adaptive Learning** - Learns from failed attempts and adjusts strategy
-- **Attack Chaining** - Automatically chains multiple vulnerabilities for deeper exploitation
-- **Custom Script Generation** - Generates Python/JavaScript for complex exploitation scenarios
-
-### Comprehensive Scanning
-- **40+ Attack Modules** - Covering OWASP Top 10 and beyond
-- **Autonomous Reconnaissance** - Subdomain enumeration, port scanning, technology fingerprinting
-- **24-Hour Assessments** - Relentless testing with configurable duration
-- **Real-time Progress** - WebSocket-based live updates during scans
-
-### Enterprise Ready
-- **Multi-Tenant Architecture** - Complete organization isolation
-- **Role-Based Access Control** - Owner, Admin, Member, Viewer roles
-- **Stripe Billing Integration** - Subscription management with usage quotas
-- **Audit Logging** - Full compliance and activity tracking
-- **API Access** - Programmatic scanning with API keys
-
-### Brutal Reporting
-- **Evidence-Based Reports** - Proof of exploitation with screenshots and data samples
-- **Attack Timelines** - Complete progression of the assessment
-- **Business Impact Calculation** - GDPR fines, breach costs, risk quantification
-- **Remediation Guidance** - Prioritized fix recommendations
-- **Multiple Formats** - HTML, JSON, Markdown, PDF
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           BREACH.AI PLATFORM                            │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐     │
-│  │   Frontend      │    │   Backend API   │    │  Scan Engine    │     │
-│  │   (Next.js)     │───▶│   (FastAPI)     │───▶│  (Python)       │     │
-│  │   Port 3000     │    │   Port 8000     │    │                 │     │
-│  └─────────────────┘    └─────────────────┘    └─────────────────┘     │
-│          │                      │                      │               │
-│          │                      ▼                      │               │
-│          │              ┌─────────────────┐            │               │
-│          │              │   PostgreSQL    │            │               │
-│          └─────────────▶│   (Database)    │◀───────────┘               │
-│                         └─────────────────┘                            │
-│                                                                         │
-│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐     │
-│  │   Clerk Auth    │    │   Stripe        │    │   Claude AI     │     │
-│  │   (SSO/OAuth)   │    │   (Billing)     │    │   (Brain)       │     │
-│  └─────────────────┘    └─────────────────┘    └─────────────────┘     │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Attack Modules
-
-### Reconnaissance
-| Module | Capabilities |
-|--------|-------------|
-| **DNS Recon** | Subdomain enumeration, DNS records, zone transfers |
-| **Port Scanner** | Full 65535 port scanning, service fingerprinting |
-| **Web Crawler** | Endpoint discovery, sitemap parsing, JS analysis |
-| **Tech Fingerprint** | Framework detection, version identification |
-| **OSINT** | Employee discovery, leaked credentials, git exposure |
-| **Cloud Discovery** | S3 buckets, Azure blobs, GCP storage |
-
-### Injection Attacks
-| Module | Capabilities |
-|--------|-------------|
-| **SQL Injection** | Error-based, Union, Blind, Time-based, OOB |
-| **NoSQL Injection** | MongoDB, CouchDB, Redis injection |
-| **Command Injection** | OS command execution, shell escape |
-| **Template Injection** | SSTI in Jinja2, Twig, Freemarker, etc. |
-| **XSS** | Reflected, Stored, DOM-based, mutation XSS |
-| **XXE** | XML external entity injection |
-
-### Authentication Attacks
-| Module | Capabilities |
-|--------|-------------|
-| **JWT Obliterator** | Algorithm confusion, key brute force, claim manipulation |
-| **OAuth Destroyer** | Token theft, redirect manipulation, scope escalation |
-| **Session Annihilator** | Fixation, prediction, hijacking |
-| **Password Reset Killer** | Token prediction, email injection |
-| **MFA Bypass** | Rate limiting abuse, backup codes, response manipulation |
-| **SAML Destroyer** | Signature bypass, XXE, assertion manipulation |
-| **API Auth Breaker** | API key leakage, bearer token attacks |
-
-### Access Control
-| Module | Capabilities |
-|--------|-------------|
-| **IDOR Scanner** | Insecure direct object references (BOLA) |
-| **Privilege Escalation** | Vertical and horizontal privilege attacks |
-| **RBAC Bypass** | Role manipulation, permission confusion |
-
-### API Security
-| Module | Capabilities |
-|--------|-------------|
-| **REST API Attacker** | Mass assignment, parameter pollution, verb tampering |
-| **GraphQL Destroyer** | Introspection abuse, injection, batching attacks, DoS |
-| **WebSocket Destroyer** | Protocol attacks, injection, hijacking |
-| **API Discovery** | Hidden endpoints, version enumeration, documentation leaks |
-
-### Business Logic
-| Module | Capabilities |
-|--------|-------------|
-| **Business Logic Destroyer** | Workflow bypass, race conditions, abuse scenarios |
-| **Payment Bypass** | Price manipulation, currency confusion, coupon abuse |
-| **Rate Limit Bypass** | Header manipulation, distributed requests |
-
-### Infrastructure
-| Module | Capabilities |
-|--------|-------------|
-| **SSRF Scanner** | Internal service access, cloud metadata, protocol smuggling |
-| **Cloud Destroyer** | AWS/Azure/GCP misconfigs, IAM exploitation, serverless attacks |
-| **Docker Destroyer** | Container escapes, registry attacks, secrets exposure |
-| **File Warfare** | Upload bypass, path traversal, LFI/RFI |
-
-### Modern Stack
-| Module | Capabilities |
-|--------|-------------|
-| **Modern Stack Destroyer** | Next.js, Nuxt, SvelteKit, Vercel, Netlify vulnerabilities |
-| **BaaS Attacker** | Supabase RLS bypass, Firebase rules, Clerk misconfig |
-| **AI Code Analyzer** | Detects AI-generated code vulnerabilities |
-
----
-
-## Tech Stack
-
-### Backend
-- **Python 3.11+** - Core language
-- **FastAPI** - REST API framework
-- **SQLAlchemy** - Async ORM with PostgreSQL/SQLite
-- **Anthropic Claude** - AI decision engine
-- **ARQ** - Background job queue
-- **Redis** - Rate limiting and caching
-- **Pydantic** - Data validation
-
-### Frontend
-- **Next.js 14** - React framework with App Router
-- **TypeScript** - Type-safe development
-- **Tailwind CSS** - Styling with custom design system
-- **Clerk** - Authentication and user management
-- **Recharts** - Data visualization
-- **Radix UI** - Accessible component primitives
-
-### Infrastructure
-- **PostgreSQL** - Production database
-- **SQLite** - Development database
-- **Redis** - Rate limiting, job queue
-- **Docker** - Containerization
-- **Prometheus** - Metrics collection
-- **Sentry** - Error tracking
-
----
+- **60+ Attack Modules** - SQL injection, XSS, SSRF, authentication bypass, and more
+- **Proof-by-Exploitation** - Every finding includes working proof-of-concept
+- **AI-Powered Analysis** - Optional Claude integration for intelligent attack planning
+- **Multiple Scan Modes** - From quick recon to comprehensive chaos testing
+- **Beautiful Reports** - JSON, Markdown, and HTML output formats
 
 ## Installation
 
-### Prerequisites
-- Python 3.11+
-- Node.js 18+
-- PostgreSQL (production) or SQLite (development)
-- Redis (optional, for rate limiting)
-
-### Quick Start (Development)
-
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/breach-ai.git
-cd breach-ai
-
-# Backend setup
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-
-# Frontend setup
-cd frontend
-npm install
-cd ..
-
-# Configure environment
-cp .env.example .env
-# Edit .env with your API keys:
-# - ANTHROPIC_API_KEY (required)
-# - CLERK_SECRET_KEY (required for web platform)
-# - STRIPE_SECRET_KEY (optional, for billing)
-
-# Start backend
-uvicorn backend.api.server:app --reload --port 8000
-
-# Start frontend (new terminal)
-cd frontend
-npm run dev
+pip install breach-ai
 ```
 
-### Production Deployment
-
+For AI-powered features:
 ```bash
-# Using Docker Compose
-docker-compose up -d
-
-# Or manually:
-# 1. Set up PostgreSQL and Redis
-# 2. Configure .env.production
-# 3. Run with gunicorn:
-gunicorn backend.api.server:app -w 4 -k uvicorn.workers.UvicornWorker
+pip install breach-ai[ai]
 ```
 
----
+For browser-based testing:
+```bash
+pip install breach-ai[browser]
+```
 
-## Usage
+For everything:
+```bash
+pip install breach-ai[full]
+```
 
-### CLI Mode
+## Quick Start
 
 ```bash
 # Basic scan
-python main.py https://target.com
+breach https://example.com
 
-# Deep scan with AI attack chaining
-python main.py https://target.com --mode deep
+# Quick reconnaissance
+breach https://example.com --mode quick
 
-# Authenticated scan
-python main.py https://target.com --cookie "session=xxx"
+# Deep comprehensive scan
+breach https://example.com --mode deep
 
-# Custom headers
-python main.py https://target.com --header "Authorization: Bearer token"
+# Only proven/exploited vulnerabilities
+breach https://example.com --mode proven
 
-# Output to file
-python main.py https://target.com --output report.json
+# All 60+ modules (chaos mode)
+breach https://example.com --mode chaos
 ```
 
-### Web Platform
+## Scan Modes
 
-1. Navigate to `http://localhost:3000`
-2. Sign in with Clerk authentication
-3. Add a target domain/URL
-4. Configure scan settings
-5. Start the scan
-6. Monitor progress in real-time
-7. Download reports when complete
+| Mode | Description | Duration |
+|------|-------------|----------|
+| `quick` | Fast recon and common vulnerabilities | ~5 min |
+| `deep` | Comprehensive testing with all checks | ~30 min |
+| `proven` | Only report exploited vulnerabilities | ~20 min |
+| `chaos` | Run all 60+ attack modules | ~45 min |
 
-### API Access
+## Output Formats
 
 ```bash
-# Create API key from dashboard, then:
+# JSON output
+breach https://example.com -o report.json
 
-# Start a scan
-curl -X POST https://api.breach.ai/api/v1/scans \
-  -H "X-API-Key: breach_your_key" \
-  -H "Content-Type: application/json" \
-  -d '{"target_url": "https://target.com", "mode": "standard"}'
+# Markdown report
+breach https://example.com -o report.md
 
-# Get scan status
-curl https://api.breach.ai/api/v1/scans/{scan_id} \
-  -H "X-API-Key: breach_your_key"
-
-# List findings
-curl https://api.breach.ai/api/v1/scans/{scan_id}/findings \
-  -H "X-API-Key: breach_your_key"
+# HTML report
+breach https://example.com -o report.html
 ```
 
----
+## Commands
 
-## API Endpoints
+```bash
+# Show version
+breach --version
+
+# List all attack modules
+breach list-modules
+
+# System diagnostics
+breach doctor
+
+# Show help
+breach --help
+```
+
+## Attack Modules
+
+BREACH includes 60+ attack modules covering:
+
+### Injection
+- SQL Injection (error-based, blind, time-based)
+- NoSQL Injection (MongoDB operators)
+- Command Injection
+- LDAP Injection
+- XPath Injection
+
+### Cross-Site Scripting (XSS)
+- Reflected XSS
+- Stored XSS
+- DOM-based XSS
 
 ### Authentication
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/v1/auth/me` | Get current user |
-| POST | `/api/v1/auth/api-keys` | Create API key |
-| GET | `/api/v1/auth/api-keys` | List API keys |
-| DELETE | `/api/v1/auth/api-keys/{id}` | Revoke API key |
+- Brute Force
+- Credential Stuffing
+- Password Reset Flaws
+- Session Fixation
+- JWT Attacks
 
-### Targets
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/targets` | Add target |
-| GET | `/api/v1/targets` | List targets |
-| GET | `/api/v1/targets/{id}` | Get target |
-| DELETE | `/api/v1/targets/{id}` | Delete target |
+### Authorization
+- IDOR (Insecure Direct Object Reference)
+- Privilege Escalation
+- Access Control Bypass
 
-### Scans
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/scans` | Start scan |
-| GET | `/api/v1/scans` | List scans |
-| GET | `/api/v1/scans/{id}` | Get scan details |
-| POST | `/api/v1/scans/{id}/cancel` | Cancel scan |
-| GET | `/api/v1/scans/{id}/findings` | Get findings |
-| GET | `/api/v1/scans/{id}/export` | Export report |
+### Server-Side
+- SSRF (Server-Side Request Forgery)
+- XXE (XML External Entity)
+- SSTI (Server-Side Template Injection)
+- Path Traversal
+- File Inclusion (LFI/RFI)
 
-### Billing
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/v1/billing/subscription` | Get subscription |
-| POST | `/api/v1/billing/checkout` | Create checkout |
-| POST | `/api/v1/billing/portal` | Customer portal |
+### API Security
+- GraphQL Introspection
+- REST API Enumeration
+- Rate Limiting Bypass
+- Mass Assignment
 
-### WebSocket
-| Endpoint | Description |
-|----------|-------------|
-| `WS /ws/scans/{id}` | Real-time scan updates |
-
----
+### Infrastructure
+- Subdomain Takeover
+- DNS Zone Transfer
+- SSL/TLS Misconfigurations
+- Information Disclosure
 
 ## Configuration
 
-### Environment Variables
+Create a `.env` file or set environment variables:
 
 ```bash
-# Database
-DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/breach
-# Or for development:
-DATABASE_URL=sqlite+aiosqlite:///./breach.db
+# Optional: AI-powered analysis
+ANTHROPIC_API_KEY=sk-ant-...
 
-# Redis (optional)
-REDIS_URL=redis://localhost:6379
-
-# Authentication (Clerk)
-CLERK_PUBLISHABLE_KEY=pk_xxx
-CLERK_SECRET_KEY=sk_xxx
-
-# AI Engine
-ANTHROPIC_API_KEY=sk-ant-xxx
-
-# Billing (Stripe)
-STRIPE_SECRET_KEY=sk_xxx
-STRIPE_WEBHOOK_SECRET=whsec_xxx
-
-# Server
-HOST=0.0.0.0
-PORT=8000
-DEBUG=false
-ENVIRONMENT=production
-
-# Scanning
-SCAN_TIMEOUT_SECONDS=3600
-MAX_CONCURRENT_SCANS=5
-
-# Rate Limiting
-RATE_LIMIT_GLOBAL=100/minute
-RATE_LIMIT_SCANS=10/minute
-
-# Monitoring (optional)
-SENTRY_DSN=https://xxx@sentry.io/xxx
+# Optional: Custom settings
+BREACH_TIMEOUT=30
+BREACH_RATE_LIMIT=50
+BREACH_OUTPUT_DIR=./reports
 ```
 
----
-
-## Subscription Plans
-
-| Feature | Free | Starter | Business | Enterprise |
-|---------|------|---------|----------|------------|
-| Scans/month | 10 | 50 | 200 | 1000 |
-| Targets | 3 | 10 | 50 | 200 |
-| API Access | - | Yes | Yes | Yes |
-| Deep Scan Mode | - | - | Yes | Yes |
-| Team Members | 1 | 5 | 20 | Unlimited |
-| Priority Support | - | Email | Priority | Dedicated |
-| Price | $0 | $49/mo | $199/mo | Custom |
-
----
-
-## Project Structure
+## Example Output
 
 ```
-breach/
-├── backend/                    # Python backend
-│   ├── breach/                # Core scanning engine
-│   │   ├── core/              # Agent, brain, memory, scheduler
-│   │   ├── attacks/           # 40+ attack modules
-│   │   ├── recon/             # Reconnaissance modules
-│   │   ├── agents/            # AI decision agents
-│   │   └── report/            # Report generation
-│   ├── api/                   # FastAPI REST API
-│   │   ├── routes/            # Auth, scans, billing endpoints
-│   │   └── middleware/        # Auth, CORS, rate limiting
-│   ├── services/              # Business logic layer
-│   ├── db/                    # Database models and setup
-│   ├── schemas/               # Pydantic schemas
-│   └── config.py              # Settings management
-├── frontend/                  # Next.js frontend
-│   ├── src/
-│   │   ├── app/               # Page routes
-│   │   ├── components/        # React components
-│   │   ├── lib/               # API client, utilities
-│   │   └── hooks/             # Custom React hooks
-│   └── package.json
-├── scripts/                   # Utility scripts
-├── tests/                     # Test suite
-├── alembic/                   # Database migrations
-├── requirements.txt           # Python dependencies
-├── docker-compose.yml         # Container orchestration
-└── .env.example               # Environment template
+BREACH v2.0.0 - Autonomous Security Scanner
+============================================
+
+Target: https://example.com
+Mode: deep
+Started: 2024-01-15 10:30:00
+
+[*] Reconnaissance Phase
+    - Discovered 45 endpoints
+    - Found 12 parameters
+    - Identified technologies: PHP, MySQL, nginx
+
+[*] Attack Phase
+    - Testing SQL Injection...
+      CRITICAL: SQLi found in /api/users?id=
+    - Testing XSS...
+      HIGH: Reflected XSS in /search?q=
+    - Testing SSRF...
+      CRITICAL: SSRF in /fetch?url=
+
+[*] Exploitation Phase
+    - Exploiting SQLi... SUCCESS
+      Extracted: 1,247 user records
+    - Exploiting SSRF... SUCCESS
+      Accessed internal endpoint: http://169.254.169.254/
+
+============================================
+Scan Complete: 3 vulnerabilities (2 critical, 1 high)
+Report saved: report.json
 ```
-
----
-
-## Security Considerations
-
-### For Users
-- **Only scan targets you own or have explicit written permission to test**
-- BREACH.AI requires domain ownership verification
-- Scans are logged and auditable
-- API keys should be kept secret and rotated regularly
-
-### Platform Security
-- No wildcard CORS - explicit origin allowlist
-- SSRF protection - blocks private IPs and metadata endpoints
-- Rate limiting on all endpoints
-- API key scoping system
-- Complete audit logging
-- Per-organization data isolation
-
----
 
 ## Development
 
-### Running Tests
-
 ```bash
-# Backend tests
-pytest tests/ -v
+# Clone the repository
+git clone https://github.com/yourusername/breach.git
+cd breach
 
-# With coverage
-pytest tests/ --cov=backend --cov-report=html
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate
 
-# Frontend tests
-cd frontend && npm test
+# Install in development mode
+pip install -e ".[full]"
+
+# Run tests
+pytest
+
+# Run the CLI
+breach --help
 ```
-
-### Code Quality
-
-```bash
-# Linting
-ruff check backend/
-black backend/ --check
-
-# Type checking
-mypy backend/
-```
-
----
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
----
-
-## License
-
-MIT License - see [LICENSE](LICENSE) for details.
-
----
 
 ## Legal Disclaimer
 
-BREACH.AI is designed for authorized security testing only. Users are solely responsible for ensuring they have proper authorization before scanning any target. Unauthorized access to computer systems is illegal. The developers assume no liability for misuse of this software.
+BREACH is designed for **authorized security testing only**.
 
----
+- Only scan targets you own or have explicit written permission to test
+- Unauthorized scanning may violate computer crime laws
+- The authors are not responsible for misuse of this tool
 
-## Support
+By using BREACH, you agree to use it responsibly and legally.
 
-- **Documentation**: [docs.breach.ai](https://docs.breach.ai)
-- **Issues**: [GitHub Issues](https://github.com/yourusername/breach-ai/issues)
-- **Email**: support@breach.ai
-- **Discord**: [Join our community](https://discord.gg/breach-ai)
+## License
 
----
+This project is licensed under the [GNU Affero General Public License v3.0](LICENSE).
 
-<div align="center">
+## Contributing
 
-**Built with relentless determination to find what others miss.**
+Contributions are welcome! Please read our [Contributing Guidelines](CONTRIBUTING.md) before submitting a pull request.
 
-*BREACH.AI - Because no one ignores a breach.*
+## Acknowledgments
 
-</div>
+Inspired by the security research community and tools like:
+- [Nuclei](https://github.com/projectdiscovery/nuclei)
+- [SQLMap](https://github.com/sqlmapproject/sqlmap)
+- [Shannon](https://github.com/KeygraphHQ/shannon)
