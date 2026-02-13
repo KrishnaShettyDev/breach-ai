@@ -34,13 +34,20 @@ CLI Usage:
 __version__ = "5.0.0"
 __author__ = "BREACH.AI"
 
-# Main exports
-from backend.breach.brutal_assessment import (
-    BrutalAssessment,
-    AssessmentResults,
-    Finding,
-    run_brutal_assessment,
-)
+# Main exports - use try/except for flexible imports
+try:
+    from .brutal_assessment import (
+        BrutalAssessment,
+        AssessmentResults,
+        Finding,
+        run_brutal_assessment,
+    )
+except ImportError:
+    # Module may not be fully installed
+    BrutalAssessment = None
+    AssessmentResults = None
+    Finding = None
+    run_brutal_assessment = None
 
 __all__ = [
     "BrutalAssessment",

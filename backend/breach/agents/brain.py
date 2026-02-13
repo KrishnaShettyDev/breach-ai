@@ -36,9 +36,14 @@ class PostExAction:
     parameters: dict
 
 
-SYSTEM_PROMPT = """You are the brain of BREACH.AI, an autonomous security assessment agent.
+SYSTEM_PROMPT = """You are the brain of BREACH.AI, a security assessment agent.
 
-Your job is to think like a real attacker - methodical, patient, and relentless.
+IMPORTANT RULES:
+- Only suggest attacks for endpoints that ACTUALLY EXIST in the attack surface
+- Do NOT hallucinate or make up endpoints that weren't discovered
+- Do NOT suggest attacks without a clear, verifiable target
+- Focus on real vulnerabilities, not theoretical ones
+- Every attack MUST have a concrete target URL from the discovered endpoints
 
 CURRENT CONTEXT:
 - Target: {target}
@@ -158,10 +163,10 @@ class AgentBrain:
     async def decide_next_actions(self, context: dict) -> list[AttackAction]:
         """
         Decide the next attacks to try based on current context.
-        
+
         Args:
             context: Current state including findings, access level, attack surface
-            
+
         Returns:
             List of AttackAction objects to execute
         """
@@ -177,7 +182,7 @@ class AgentBrain:
             failed_attacks=self._format_failed(context["failed_attacks"]),
             credentials=self._format_credentials(context.get("credentials", {})),
         )
-        
+
         try:
             response = self.client.messages.create(
                 model=self.model,
@@ -186,26 +191,95 @@ class AgentBrain:
                     {"role": "user", "content": prompt}
                 ]
             )
-            
+
             # Parse the response
             content = response.content[0].text
             actions = self._parse_actions(content)
-            
+
+            # VALIDATE: Filter out hallucinated attacks
+            valid_actions = self._validate_actions(actions, context)
+
             # Log decisions
-            for action in actions:
+            for action in valid_actions:
                 logger.debug(f"Brain decided: {action.name} (priority: {action.priority})")
                 logger.debug(f"  Reasoning: {action.reasoning}")
-                
+
+            if len(valid_actions) < len(actions):
+                logger.warning(f"Filtered {len(actions) - len(valid_actions)} hallucinated attacks")
+
             self.decision_history.append({
                 "context_summary": f"Access: {context['current_access']}, Findings: {len(context['findings'])}",
-                "actions": [a.name for a in actions]
+                "actions": [a.name for a in valid_actions]
             })
-            
-            return actions
-            
+
+            return valid_actions
+
         except Exception as e:
             logger.error(f"Brain decision failed: {e}")
             return []
+
+    def _validate_actions(self, actions: list[AttackAction], context: dict) -> list[AttackAction]:
+        """
+        Validate suggested actions against the actual attack surface.
+        Filters out hallucinated endpoints and unrealistic attacks.
+        """
+        valid_actions = []
+
+        # Get known endpoints from attack surface
+        attack_surface = context.get("attack_surface", {})
+        known_endpoints = set(attack_surface.get("endpoints", []))
+        target_base = context.get("target", "")
+
+        valid_attack_types = {
+            "sqli", "xss", "ssrf", "cmdi", "lfi", "nosql", "ssti", "xxe",
+            "auth_bypass", "idor", "jwt_attack", "csrf", "open_redirect",
+            "sensitive_file", "path_traversal", "header_injection"
+        }
+
+        for action in actions:
+            # 1. Check attack type is valid
+            if action.attack_type.lower() not in valid_attack_types:
+                logger.debug(f"Filtered invalid attack type: {action.attack_type}")
+                continue
+
+            # 2. Check target is not empty
+            if not action.target or action.target.strip() == "":
+                logger.debug(f"Filtered empty target: {action.name}")
+                continue
+
+            # 3. Check target is related to our target (not a completely different domain)
+            from urllib.parse import urlparse
+            try:
+                target_host = urlparse(target_base).netloc
+                action_host = urlparse(action.target).netloc
+
+                # Allow if it's the same domain or subdomain
+                if action_host and not (
+                    action_host == target_host or
+                    action_host.endswith("." + target_host) or
+                    action.target.startswith("/")  # Relative path
+                ):
+                    logger.debug(f"Filtered off-target attack: {action.target} (target: {target_host})")
+                    continue
+            except:
+                pass  # If parsing fails, let it through for now
+
+            # 4. For endpoints not in known list, lower priority
+            if known_endpoints and action.target not in known_endpoints:
+                if not any(ep in action.target or action.target in ep for ep in known_endpoints):
+                    # Significantly lower priority for unverified endpoints
+                    action.priority = min(action.priority, 3)
+                    logger.debug(f"Lowered priority for unverified endpoint: {action.target}")
+
+            # 5. Check parameters make sense for attack type
+            if action.attack_type in ["sqli", "xss", "cmdi", "lfi"]:
+                if not action.parameters:
+                    # These attacks need parameters - lower priority
+                    action.priority = min(action.priority, 2)
+
+            valid_actions.append(action)
+
+        return valid_actions
     
     async def get_follow_up_attacks(self, vuln_result) -> list[AttackAction]:
         """
