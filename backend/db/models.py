@@ -55,7 +55,7 @@ class ScanMode(str, PyEnum):
     NORMAL = "normal"
     DEEP = "deep"
     CHAINBREAKER = "chainbreaker"
-    SHANNON = "shannon"  # Shannon-style proof-by-exploitation mode
+    PROVEN = "proven"  # Proof-by-exploitation mode (only reports exploited vulns)
 
 
 class Severity(str, PyEnum):
@@ -309,7 +309,7 @@ class Finding(Base):
     # Reproduction
     curl_command: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    # Shannon Mode: Exploitation Proof
+    # Proven Mode: Exploitation Proof
     is_exploited: Mapped[bool] = mapped_column(Boolean, default=False)  # Was this actually exploited?
     exploitation_proof: Mapped[dict] = mapped_column(JSON, default=dict)  # Proof data
     exploitation_proof_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # js_executed, data_extracted, etc.
@@ -319,7 +319,7 @@ class Finding(Base):
     reproduction_steps: Mapped[list] = mapped_column(JSON, default=list)  # Step-by-step reproduction
     poc_script: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Auto-generated PoC script
 
-    # Source Analysis (Shannon white-box)
+    # Source Analysis (Proven white-box)
     data_flow_source: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # User input source
     data_flow_sink: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # Dangerous sink
     source_file: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)  # File where vulnerability found

@@ -423,9 +423,9 @@ class ScanService:
         target=None
     ) -> None:
         """Execute the actual scan (called within timeout wrapper)."""
-        # Check if this is a Shannon mode scan
-        if scan.mode == ScanMode.SHANNON:
-            await self._execute_shannon_scan(scan, integration_manager, target)
+        # Check if this is a Proven mode scan (proof-by-exploitation)
+        if scan.mode == ScanMode.PROVEN:
+            await self._execute_proven_scan(scan, integration_manager, target)
             return
 
         from backend.breach.engine import BreachEngine
@@ -598,18 +598,18 @@ class ScanService:
         except Exception as e:
             logger.warning("scan_completion_email_failed", scan_id=str(scan.id), error=str(e))
 
-    async def _execute_shannon_scan(
+    async def _execute_proven_scan(
         self,
         scan: Scan,
         integration_manager=None,
         target=None
     ) -> None:
-        """Execute Shannon mode scan with proof-by-exploitation."""
+        """Execute Proven mode scan with proof-by-exploitation."""
         try:
             from backend.breach.exploitation.shannon_engine import ShannonEngine
         except ImportError as e:
-            logger.error("shannon_import_failed", error=str(e))
-            raise ValueError("Shannon engine not available. Please check installation.")
+            logger.error("proven_import_failed", error=str(e))
+            raise ValueError("Proven engine not available. Please check installation.")
 
         # Extract config
         config = scan.config or {}
@@ -625,7 +625,7 @@ class ScanService:
                     key, value = cookie.strip().split("=", 1)
                     cookies_dict[key.strip()] = value.strip()
 
-        # Shannon-specific config
+        # Proven mode-specific config
         use_browser = config.get("browser_validation", True)
         use_source_analysis = config.get("source_analysis", False)  # White-box requires source
         parallel_agents = config.get("parallel_agents", 5)
@@ -634,7 +634,7 @@ class ScanService:
         # Broadcast scan started
         await self._broadcast_progress(str(scan.id), "scan_started", {
             "target_url": scan.target_url,
-            "mode": "shannon",
+            "mode": "proven",
             "phase": "initializing",
         })
 
@@ -647,11 +647,11 @@ class ScanService:
 
         # Broadcast phase update
         await self._broadcast_progress(str(scan.id), "phase_update", {
-            "phase": "shannon_exploitation",
-            "message": f"Running Shannon proof-by-exploitation scan against {scan.target_url}",
+            "phase": "proven_exploitation",
+            "message": f"Running Proven proof-by-exploitation scan against {scan.target_url}",
         })
 
-        # Use context manager pattern for ShannonEngine
+        # Use context manager pattern for Proven engine
         async with ShannonEngine(
             timeout_minutes=timeout_hours * 60,
             use_browser=use_browser,
@@ -663,7 +663,7 @@ class ScanService:
             # Register progress callback
             engine.on_progress(on_progress)
 
-            # Run the Shannon scan
+            # Run the Proven scan
             result = await engine.scan(
                 target=scan.target_url,
                 cookies=cookies_dict,
@@ -676,11 +676,11 @@ class ScanService:
                 "message": f"Saving {len(result.findings)} validated findings...",
             })
 
-            # Save Shannon findings (only exploited ones)
-            await self._save_shannon_findings(scan, result)
+            # Save Proven findings (only exploited ones)
+            await self._save_proven_findings(scan, result)
 
             # Update scan stats
-            await self._update_shannon_stats(scan, result)
+            await self._update_proven_stats(scan, result)
 
             # Calculate exploitation rate
             total_tested = result.exploitation_attempts or 1
@@ -709,9 +709,9 @@ class ScanService:
                     except Exception as e:
                         logger.warning("breach_notify_failed", error=str(e))
 
-    async def _save_shannon_findings(self, scan: Scan, result) -> None:
-        """Save Shannon findings with exploitation proof data."""
-        # Map severity strings (uppercase from ShannonFinding) to DB severity
+    async def _save_proven_findings(self, scan: Scan, result) -> None:
+        """Save Proven findings with exploitation proof data."""
+        # Map severity strings to DB severity
         severity_map = {
             "CRITICAL": DBSeverity.CRITICAL,
             "HIGH": DBSeverity.HIGH,
@@ -727,7 +727,7 @@ class ScanService:
         }
 
         for finding_data in result.findings:
-            # Get evidence and PoC data from ShannonFinding
+            # Get evidence and PoC data from Proven finding
             evidence_data = {}
             poc_script = None
             screenshot_path = None
@@ -764,18 +764,18 @@ class ScanService:
                 severity=severity_map.get(finding_data.severity, DBSeverity.MEDIUM),
                 category=finding_data.vulnerability_type,
                 endpoint=finding_data.endpoint,
-                method="GET",  # Default, ShannonFinding doesn't track method
+                method="GET",  # Default, Proven finding doesn't track method
                 parameter=finding_data.parameter,
                 description=description,
                 evidence=evidence_data,
                 business_impact=float(finding_data.business_impact or 0),
                 impact_explanation=finding_data.impact_explanation,
-                records_exposed=0,  # Not tracked by ShannonFinding
-                pii_fields=[],  # Not tracked by ShannonFinding
+                records_exposed=0,  # Not tracked by Proven finding
+                pii_fields=[],  # Not tracked by Proven finding
                 fix_suggestion=finding_data.remediation,
                 curl_command=finding_data.curl_command,
-                # Shannon-specific fields
-                is_exploited=True,  # Shannon only reports exploited findings
+                # Proven mode-specific fields
+                is_exploited=True,  # Proven only reports exploited findings
                 exploitation_proof=finding_data.proof_data,
                 exploitation_proof_type=finding_data.proof_type,
                 exploitation_confidence=finding_data.confidence,
@@ -790,11 +790,11 @@ class ScanService:
             )
             self.db.add(finding)
 
-    async def _update_shannon_stats(self, scan: Scan, result) -> None:
-        """Update scan statistics from Shannon results."""
+    async def _update_proven_stats(self, scan: Scan, result) -> None:
+        """Update scan statistics from Proven results."""
         findings = result.findings
         scan.findings_count = len(findings)
-        # ShannonFinding uses uppercase severity values
+        # Proven finding uses uppercase severity values
         scan.critical_count = len([f for f in findings if f.severity in ("CRITICAL", "critical")])
         scan.high_count = len([f for f in findings if f.severity in ("HIGH", "high")])
         scan.medium_count = len([f for f in findings if f.severity in ("MEDIUM", "medium")])

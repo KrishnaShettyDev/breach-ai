@@ -103,7 +103,7 @@ class ScanMode(str, Enum):
     NORMAL = "normal"
     DEEP = "deep"
     CHAINBREAKER = "chainbreaker"
-    SHANNON = "shannon"  # Proof-by-exploitation mode - only reports exploited vulnerabilities
+    PROVEN = "proven"  # Proof-by-exploitation mode - only reports exploited vulnerabilities
 
 
 class ScanStatus(str, Enum):
@@ -223,7 +223,7 @@ class FindingResponse(BaseModel):
     references: List[str]
     curl_command: Optional[str]
 
-    # Shannon Mode: Exploitation Proof
+    # Proven Mode: Exploitation Proof
     is_exploited: bool = False
     exploitation_proof: Dict[str, Any] = {}
     exploitation_proof_type: Optional[str] = None
@@ -232,7 +232,7 @@ class FindingResponse(BaseModel):
     reproduction_steps: List[str] = []
     poc_script: Optional[str] = None
 
-    # Source Analysis (Shannon white-box)
+    # Source Analysis (Proven white-box)
     data_flow_source: Optional[str] = None
     data_flow_sink: Optional[str] = None
     source_file: Optional[str] = None

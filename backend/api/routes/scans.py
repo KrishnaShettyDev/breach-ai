@@ -417,7 +417,7 @@ async def export_scan(
                     "fix_suggestion": f.fix_suggestion,
                     "curl_command": f.curl_command,
                     "discovered_at": f.discovered_at.isoformat() if f.discovered_at else None,
-                    # Shannon mode exploitation proof fields
+                    # Proven mode exploitation proof fields
                     "is_exploited": getattr(f, 'is_exploited', False),
                     "exploitation_proof": getattr(f, 'exploitation_proof', None),
                     "exploitation_proof_type": getattr(f, 'exploitation_proof_type', None),
@@ -446,7 +446,7 @@ async def export_scan(
         output = io.StringIO()
         writer = csv.writer(output)
 
-        # Header - includes Shannon mode fields
+        # Header - includes Proven mode fields
         writer.writerow([
             "Severity", "Category", "Title", "Description", "Endpoint",
             "Method", "Business Impact", "Records Exposed", "PII Fields",
@@ -500,7 +500,7 @@ async def export_scan(
             sev = f.severity.value if hasattr(f.severity, 'value') else f.severity
             color = severity_colors.get(sev, "#6c757d")
 
-            # Shannon Mode exploitation badge
+            # Proven Mode exploitation badge
             exploitation_badge = ""
             if hasattr(f, 'is_exploited') and f.is_exploited:
                 exploitation_badge = f"""
@@ -508,7 +508,7 @@ async def export_scan(
                     ✓ EXPLOITED ({f.exploitation_confidence * 100:.0f}% confidence)
                 </span>"""
 
-            # Shannon Mode evidence section
+            # Proven Mode evidence section
             evidence_section = ""
             if hasattr(f, 'is_exploited') and f.is_exploited:
                 evidence_section = f"""
