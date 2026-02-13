@@ -73,11 +73,11 @@ htmlcov/
 *.sqlite
 *.sqlite3
 
-# Output directories
-output/
-breach_output/
-reports/
-storage/
+# Output directories (root level only, not backend/breach/output/)
+/output/
+/breach_output/
+/reports/
+/storage/
 
 # Node modules (frontend)
 node_modules/
