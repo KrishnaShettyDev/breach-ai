@@ -1,5 +1,5 @@
 """BREACH.AI Utilities Module."""
 
-from breach.utils.http_client import HTTPClient, HTTPResponse
+from breach.utils.http import HTTPClient, HTTPResponse
 
 __all__ = ["HTTPClient", "HTTPResponse"]

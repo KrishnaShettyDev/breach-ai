@@ -15,6 +15,7 @@ import json
 import os
 import zipfile
 import base64
+import structlog
 from io import BytesIO
 
 from breach.core.killchain import (
@@ -527,7 +528,6 @@ class AssessmentReportGenerator:
             pass  # PDF generation not available
         except Exception as e:
             # Log but don't fail if PDF generation fails
-            import structlog
             logger = structlog.get_logger(__name__)
             logger.warning("pdf_generation_failed", error=str(e))
 
