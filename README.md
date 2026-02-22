@@ -1,18 +1,16 @@
 # BREACH
 
-**Autonomous Security Scanner with Proof-by-Exploitation**
-
-BREACH is an AI-powered security scanner that proves vulnerabilities by exploiting them. No false positives - every finding includes working proof.
+AI-powered security scanner that proves vulnerabilities by exploiting them. No false positives.
 
 ## Install
 
 ```bash
-pip install breach-ai
+pip install aibreach
 ```
 
-With AI + Browser:
+With AI features:
 ```bash
-pip install breach-ai[full]
+pip install aibreach[full]
 ```
 
 ## Usage
@@ -21,58 +19,40 @@ pip install breach-ai[full]
 # Scan a target
 breach scan https://example.com
 
-# AI God Mode (3-4 hours autonomous)
+# AI autonomous mode
 breach god https://example.com
 
 # Source code analysis
-breach analyze ./myapp
+breach analyze ./src
 
 # List modules
 breach modules
 ```
 
-## Core Attack Modules
-
-10 battle-tested modules. AI handles the rest.
+## Attack Modules
 
 | Module | Type | Severity |
 |--------|------|----------|
-| `sqli` | SQL Injection | CRITICAL |
-| `nosql` | NoSQL Injection | CRITICAL |
-| `cmdi` | Command Injection | CRITICAL |
-| `ssti` | Template Injection | CRITICAL |
-| `ssrf` | Server-Side Request Forgery | CRITICAL |
-| `xss` | Cross-Site Scripting | HIGH |
-| `auth` | Authentication Attacks | CRITICAL |
-| `jwt` | JWT Attacks | CRITICAL |
-| `idor` | Insecure Direct Object Reference | HIGH |
-| `lfi` | File Inclusion/Traversal | HIGH |
+| `sqli` | SQL Injection | Critical |
+| `nosql` | NoSQL Injection | Critical |
+| `cmdi` | Command Injection | Critical |
+| `ssti` | Template Injection | Critical |
+| `ssrf` | Server-Side Request Forgery | Critical |
+| `xss` | Cross-Site Scripting | High |
+| `auth` | Authentication Bypass | Critical |
+| `jwt` | JWT Attacks | Critical |
+| `idor` | Insecure Direct Object Reference | High |
+| `lfi` | Local File Inclusion | High |
 
-## Commands
+## Requirements
 
-```bash
-breach scan <url>      # 4-phase security scan
-breach god <url>       # AI autonomous mode
-breach analyze <path>  # Source code analysis
-breach modules         # List attack modules
-breach doctor          # Check dependencies
-breach version         # Show version
-```
-
-## Environment
-
-```bash
-# Required for AI features
-ANTHROPIC_API_KEY=sk-ant-...
-
-# Optional for multi-LLM
-OPENAI_API_KEY=sk-...
-```
+- Python 3.11+
+- `ANTHROPIC_API_KEY` for AI features
 
 ## License
 
-[AGPL-3.0](LICENSE)
+AGPL-3.0
 
 ## Disclaimer
 
-For authorized security testing only. You must own the target or have written permission.
+For authorized security testing only.
