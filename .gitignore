@@ -65,6 +65,8 @@ htmlcov/
 /output/
 /reports/
 /breach_output/
+/audit-logs/
+/configs/
 
 # Claude Code (development)
 .claude/

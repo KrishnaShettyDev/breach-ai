@@ -2,231 +2,77 @@
 
 **Autonomous Security Scanner with Proof-by-Exploitation**
 
-BREACH is an AI-powered security scanner that goes beyond detection - it proves vulnerabilities by safely exploiting them. Unlike traditional scanners that generate false positives, BREACH provides concrete evidence of exploitability.
+BREACH is an AI-powered security scanner that proves vulnerabilities by exploiting them. No false positives - every finding includes working proof.
 
-## Features
-
-- **60+ Attack Modules** - SQL injection, XSS, SSRF, authentication bypass, and more
-- **Proof-by-Exploitation** - Every finding includes working proof-of-concept
-- **AI-Powered Analysis** - Optional Claude integration for intelligent attack planning
-- **Multiple Scan Modes** - From quick recon to comprehensive chaos testing
-- **Beautiful Reports** - JSON, Markdown, and HTML output formats
-
-## Installation
+## Install
 
 ```bash
 pip install breach-ai
 ```
 
-For AI-powered features:
-```bash
-pip install breach-ai[ai]
-```
-
-For browser-based testing:
-```bash
-pip install breach-ai[browser]
-```
-
-For everything:
+With AI + Browser:
 ```bash
 pip install breach-ai[full]
 ```
 
-## Quick Start
+## Usage
 
 ```bash
-# Basic scan
-breach https://example.com
+# Scan a target
+breach scan https://example.com
 
-# Quick reconnaissance
-breach https://example.com --mode quick
+# AI God Mode (3-4 hours autonomous)
+breach god https://example.com
 
-# Deep comprehensive scan
-breach https://example.com --mode deep
+# Source code analysis
+breach analyze ./myapp
 
-# Only proven/exploited vulnerabilities
-breach https://example.com --mode proven
-
-# All 60+ modules (chaos mode)
-breach https://example.com --mode chaos
+# List modules
+breach modules
 ```
 
-## Scan Modes
+## Core Attack Modules
 
-| Mode | Description | Duration |
-|------|-------------|----------|
-| `quick` | Fast recon and common vulnerabilities | ~5 min |
-| `deep` | Comprehensive testing with all checks | ~30 min |
-| `proven` | Only report exploited vulnerabilities | ~20 min |
-| `chaos` | Run all 60+ attack modules | ~45 min |
+10 battle-tested modules. AI handles the rest.
 
-## Output Formats
-
-```bash
-# JSON output
-breach https://example.com -o report.json
-
-# Markdown report
-breach https://example.com -o report.md
-
-# HTML report
-breach https://example.com -o report.html
-```
+| Module | Type | Severity |
+|--------|------|----------|
+| `sqli` | SQL Injection | CRITICAL |
+| `nosql` | NoSQL Injection | CRITICAL |
+| `cmdi` | Command Injection | CRITICAL |
+| `ssti` | Template Injection | CRITICAL |
+| `ssrf` | Server-Side Request Forgery | CRITICAL |
+| `xss` | Cross-Site Scripting | HIGH |
+| `auth` | Authentication Attacks | CRITICAL |
+| `jwt` | JWT Attacks | CRITICAL |
+| `idor` | Insecure Direct Object Reference | HIGH |
+| `lfi` | File Inclusion/Traversal | HIGH |
 
 ## Commands
 
 ```bash
-# Show version
-breach --version
-
-# List all attack modules
-breach list-modules
-
-# System diagnostics
-breach doctor
-
-# Show help
-breach --help
+breach scan <url>      # 4-phase security scan
+breach god <url>       # AI autonomous mode
+breach analyze <path>  # Source code analysis
+breach modules         # List attack modules
+breach doctor          # Check dependencies
+breach version         # Show version
 ```
 
-## Attack Modules
-
-BREACH includes 60+ attack modules covering:
-
-### Injection
-- SQL Injection (error-based, blind, time-based)
-- NoSQL Injection (MongoDB operators)
-- Command Injection
-- LDAP Injection
-- XPath Injection
-
-### Cross-Site Scripting (XSS)
-- Reflected XSS
-- Stored XSS
-- DOM-based XSS
-
-### Authentication
-- Brute Force
-- Credential Stuffing
-- Password Reset Flaws
-- Session Fixation
-- JWT Attacks
-
-### Authorization
-- IDOR (Insecure Direct Object Reference)
-- Privilege Escalation
-- Access Control Bypass
-
-### Server-Side
-- SSRF (Server-Side Request Forgery)
-- XXE (XML External Entity)
-- SSTI (Server-Side Template Injection)
-- Path Traversal
-- File Inclusion (LFI/RFI)
-
-### API Security
-- GraphQL Introspection
-- REST API Enumeration
-- Rate Limiting Bypass
-- Mass Assignment
-
-### Infrastructure
-- Subdomain Takeover
-- DNS Zone Transfer
-- SSL/TLS Misconfigurations
-- Information Disclosure
-
-## Configuration
-
-Create a `.env` file or set environment variables:
+## Environment
 
 ```bash
-# Optional: AI-powered analysis
+# Required for AI features
 ANTHROPIC_API_KEY=sk-ant-...
 
-# Optional: Custom settings
-BREACH_TIMEOUT=30
-BREACH_RATE_LIMIT=50
-BREACH_OUTPUT_DIR=./reports
+# Optional for multi-LLM
+OPENAI_API_KEY=sk-...
 ```
-
-## Example Output
-
-```
-BREACH v2.0.0 - Autonomous Security Scanner
-============================================
-
-Target: https://example.com
-Mode: deep
-Started: 2024-01-15 10:30:00
-
-[*] Reconnaissance Phase
-    - Discovered 45 endpoints
-    - Found 12 parameters
-    - Identified technologies: PHP, MySQL, nginx
-
-[*] Attack Phase
-    - Testing SQL Injection...
-      CRITICAL: SQLi found in /api/users?id=
-    - Testing XSS...
-      HIGH: Reflected XSS in /search?q=
-    - Testing SSRF...
-      CRITICAL: SSRF in /fetch?url=
-
-[*] Exploitation Phase
-    - Exploiting SQLi... SUCCESS
-      Extracted: 1,247 user records
-    - Exploiting SSRF... SUCCESS
-      Accessed internal endpoint: http://169.254.169.254/
-
-============================================
-Scan Complete: 3 vulnerabilities (2 critical, 1 high)
-Report saved: report.json
-```
-
-## Development
-
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/breach.git
-cd breach
-
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate
-
-# Install in development mode
-pip install -e ".[full]"
-
-# Run tests
-pytest
-
-# Run the CLI
-breach --help
-```
-
-## Legal Disclaimer
-
-BREACH is designed for **authorized security testing only**.
-
-- Only scan targets you own or have explicit written permission to test
-- Unauthorized scanning may violate computer crime laws
-- The authors are not responsible for misuse of this tool
-
-By using BREACH, you agree to use it responsibly and legally.
 
 ## License
 
-This project is licensed under the [GNU Affero General Public License v3.0](LICENSE).
+[AGPL-3.0](LICENSE)
 
-## Contributing
+## Disclaimer
 
-Contributions are welcome! Please read our [Contributing Guidelines](CONTRIBUTING.md) before submitting a pull request.
-
-## Acknowledgments
-
-Inspired by the security research community and tools like:
-- [Nuclei](https://github.com/projectdiscovery/nuclei)
-- [SQLMap](https://github.com/sqlmapproject/sqlmap)
-- [Shannon](https://github.com/KeygraphHQ/shannon)
+For authorized security testing only. You must own the target or have written permission.
