@@ -61,6 +61,9 @@ class WorkflowConfig:
     max_concurrent: int = 5
     timeout_minutes: int = 30
 
+    # Modules
+    modules: List[str] = field(default_factory=list)
+
     # Output
     output_dir: Path = Path("./audit-logs")
 
