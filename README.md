@@ -1,5 +1,10 @@
 # BREACH
 
+[![PyPI](https://img.shields.io/pypi/v/aibreach)](https://pypi.org/project/aibreach/)
+[![Python](https://img.shields.io/pypi/pyversions/aibreach)](https://pypi.org/project/aibreach/)
+[![License](https://img.shields.io/github/license/KrishnaShettyDev/breach-ai)](https://github.com/KrishnaShettyDev/breach-ai/blob/main/LICENSE)
+[![Downloads](https://img.shields.io/pypi/dm/aibreach)](https://pypi.org/project/aibreach/)
+
 AI-powered security scanner that proves vulnerabilities by exploiting them. No false positives.
 
 ## Install
