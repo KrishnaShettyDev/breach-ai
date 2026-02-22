@@ -25,7 +25,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 
 from breach.ai import BreachAgent, AGENT_SDK_AVAILABLE
-from breach.ai.prompts import PromptManager
+from breach.ai.prompt_manager import PromptManager
 
 
 @dataclass

@@ -21,7 +21,7 @@ from .agent import (
     create_security_tools_server,
     AGENT_SDK_AVAILABLE,
 )
-from .prompts import PromptManager
+from .prompt_manager import PromptManager
 
 __all__ = [
     # Main agent

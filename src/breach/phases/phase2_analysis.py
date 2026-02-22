@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from breach.ai import BreachAgent, AGENT_SDK_AVAILABLE
-from breach.ai.prompts import PromptManager
+from breach.ai.prompt_manager import PromptManager
 from .phase1_recon import ReconResult, Endpoint
 
 
