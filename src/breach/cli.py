@@ -31,7 +31,7 @@ from rich.table import Table
 from rich import box
 
 # Version
-__version__ = "3.0.0"
+__version__ = "3.1.0"
 
 # Initialize
 app = typer.Typer(
@@ -95,6 +95,49 @@ def verify_ownership(target: str, skip: bool = False) -> bool:
     return response.strip() == "I CONFIRM"
 
 
+def _resolve_modules(
+    categories: Optional[List[str]],
+    modules: Optional[List[str]],
+    verbose: bool = False
+) -> Optional[List[str]]:
+    """Resolve module list from categories and explicit modules."""
+    if not categories and not modules:
+        return None  # Run all modules
+
+    from breach.attacks.registry import (
+        ATTACK_REGISTRY,
+        CATEGORY_INFO,
+        AttackCategory,
+    )
+
+    selected = set()
+
+    # Add modules from categories
+    if categories:
+        for cat_name in categories:
+            try:
+                cat = AttackCategory(cat_name.lower())
+                if cat in CATEGORY_INFO:
+                    cat_modules = CATEGORY_INFO[cat]["modules"]
+                    selected.update(cat_modules)
+                    if verbose:
+                        console.print(f"[dim]  Category '{cat_name}': {len(cat_modules)} modules[/dim]")
+            except ValueError:
+                console.print(f"[yellow][!] Unknown category: {cat_name}[/yellow]")
+                console.print("[yellow]    Use 'breach modules --categories' to list categories[/yellow]")
+
+    # Add explicit modules
+    if modules:
+        for mod_name in modules:
+            if mod_name in ATTACK_REGISTRY:
+                selected.add(mod_name)
+            else:
+                console.print(f"[yellow][!] Unknown module: {mod_name}[/yellow]")
+                console.print("[yellow]    Use 'breach modules' to list modules[/yellow]")
+
+    return list(selected) if selected else None
+
+
 # ============== MAIN SCAN COMMAND ==============
 
 @app.command()
@@ -111,6 +154,14 @@ def scan(
     output: Optional[Path] = typer.Option(
         Path("./audit-logs"), "--output", "-o",
         help="Output directory for reports"
+    ),
+    category: Optional[List[str]] = typer.Option(
+        None, "--category", "-C",
+        help="Attack categories to run (e.g., injection, auth, api). Use 'breach modules' to list."
+    ),
+    modules: Optional[List[str]] = typer.Option(
+        None, "--module", "-m",
+        help="Specific modules to run (e.g., sqli, jwt, ssrf). Use 'breach modules' to list."
     ),
     ai: bool = typer.Option(
         True, "--ai/--no-ai",
@@ -179,6 +230,13 @@ def scan(
         console.print(f"[yellow][!] Repository not found: {repo}[/yellow]")
         repo = None
 
+    # Resolve modules from categories and explicit modules
+    selected_modules = _resolve_modules(category, modules, verbose)
+    if selected_modules:
+        console.print(f"[cyan][*] Running {len(selected_modules)} selected modules[/cyan]")
+        if verbose:
+            console.print(f"[dim]    Modules: {', '.join(selected_modules)}[/dim]")
+
     # Build config
     from breach.workflow import WorkflowConfig
     config = WorkflowConfig(
@@ -191,6 +249,7 @@ def scan(
         max_pages=max_pages,
         max_concurrent=parallel,
         output_dir=output,
+        modules=selected_modules,
     )
 
     # Run workflow
@@ -335,6 +394,128 @@ def list_phases():
     for num, name, desc in phases:
         console.print(f"[cyan]{num}:[/cyan] [bold]{name}[/bold]")
         console.print(f"  {desc}\n")
+
+
+@app.command("modules")
+def list_modules(
+    categories_only: bool = typer.Option(
+        False, "--categories", "-c",
+        help="Show only categories"
+    ),
+    category: Optional[str] = typer.Option(
+        None, "--filter", "-f",
+        help="Filter by category"
+    ),
+    severity: Optional[str] = typer.Option(
+        None, "--severity", "-s",
+        help="Filter by severity (CRITICAL, HIGH, MEDIUM, LOW)"
+    ),
+):
+    """List all attack modules and categories."""
+    from breach.attacks.registry import (
+        ATTACK_REGISTRY,
+        CATEGORY_INFO,
+        AttackCategory,
+        get_modules_by_category,
+        get_modules_by_severity,
+    )
+
+    console.print("[bold]BREACH Attack Modules[/bold]\n")
+
+    if categories_only:
+        # Show categories table
+        table = Table(box=box.ROUNDED, title="Attack Categories")
+        table.add_column("Category", style="cyan")
+        table.add_column("Description")
+        table.add_column("Severity", style="bold")
+        table.add_column("Modules", justify="right")
+
+        for cat in AttackCategory:
+            if cat in CATEGORY_INFO:
+                info = CATEGORY_INFO[cat]
+                sev_color = {
+                    "CRITICAL": "red",
+                    "HIGH": "yellow",
+                    "MEDIUM": "blue",
+                    "LOW": "dim",
+                }.get(info["severity"], "white")
+
+                table.add_row(
+                    cat.value,
+                    info["description"],
+                    f"[{sev_color}]{info['severity']}[/{sev_color}]",
+                    str(len(info["modules"])),
+                )
+
+        console.print(table)
+        console.print("\n[dim]Use 'breach modules --filter <category>' to see modules in a category[/dim]")
+        console.print("[dim]Use 'breach scan <target> --category injection --category auth' to run specific categories[/dim]")
+        return
+
+    # Build module list
+    if category:
+        try:
+            cat = AttackCategory(category.lower())
+            modules_list = get_modules_by_category(cat)
+            console.print(f"[cyan]Category: {category}[/cyan]\n")
+        except ValueError:
+            console.print(f"[red]Unknown category: {category}[/red]")
+            return
+    elif severity:
+        modules_list = get_modules_by_severity(severity)
+        console.print(f"[cyan]Severity: {severity.upper()}[/cyan]\n")
+    else:
+        modules_list = list(ATTACK_REGISTRY.values())
+
+    # Group by category
+    by_category: dict = {}
+    for mod in modules_list:
+        cat_name = mod.category.value
+        if cat_name not in by_category:
+            by_category[cat_name] = []
+        by_category[cat_name].append(mod)
+
+    # Display
+    for cat_name, mods in sorted(by_category.items()):
+        console.print(f"\n[bold cyan]━━━ {cat_name.upper()} ━━━[/bold cyan]")
+
+        table = Table(box=box.SIMPLE, show_header=True, padding=(0, 1))
+        table.add_column("Module", style="green")
+        table.add_column("Name")
+        table.add_column("Sev", width=8)
+        table.add_column("Description")
+
+        for mod in sorted(mods, key=lambda m: m.name):
+            # Find the key for this module
+            mod_key = next(
+                (k for k, v in ATTACK_REGISTRY.items() if v == mod),
+                "?"
+            )
+            sev_color = {
+                "CRITICAL": "red",
+                "HIGH": "yellow",
+                "MEDIUM": "blue",
+                "LOW": "dim",
+            }.get(mod.severity, "white")
+
+            table.add_row(
+                mod_key,
+                mod.name,
+                f"[{sev_color}]{mod.severity[:4]}[/{sev_color}]",
+                mod.description[:50] + "..." if len(mod.description) > 50 else mod.description,
+            )
+
+        console.print(table)
+
+    # Summary
+    total = len(modules_list)
+    critical = len([m for m in modules_list if m.severity == "CRITICAL"])
+    high = len([m for m in modules_list if m.severity == "HIGH"])
+
+    console.print(f"\n[bold]Total: {total} modules[/bold] ([red]{critical} CRITICAL[/red], [yellow]{high} HIGH[/yellow])")
+    console.print("\n[dim]Usage:[/dim]")
+    console.print("[dim]  breach scan <target> --module sqli --module xss[/dim]")
+    console.print("[dim]  breach scan <target> --category injection --category auth[/dim]")
 
 
 @app.command("init")

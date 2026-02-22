@@ -1,0 +1,101 @@
+name: New Attack Module
+description: Propose a new attack module for BREACH
+title: "[Module]: "
+labels: ["attack-module", "enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Propose a new attack module for BREACH. Attack modules are the core of our scanner.
+
+  - type: input
+    id: name
+    attributes:
+      label: Module Name
+      description: Short name for the attack module
+      placeholder: "prototype_pollution"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Attack Category
+      options:
+        - Injection (SQLi, NoSQLi, Command Injection)
+        - XSS (Reflected, Stored, DOM)
+        - Authentication/Authorization
+        - SSRF
+        - File Operations (LFI, RFI, Upload)
+        - API Security (GraphQL, REST, WebSocket)
+        - Business Logic
+        - Client-Side
+        - Cloud/Infrastructure
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Attack Description
+      description: Describe what this attack module does and why it's valuable.
+      placeholder: |
+        This module tests for...
+        It's valuable because...
+    validations:
+      required: true
+
+  - type: textarea
+    id: technique
+    attributes:
+      label: Attack Technique
+      description: How does this attack work? What payloads/techniques are used?
+      placeholder: |
+        1. Identify injection point...
+        2. Send payload...
+        3. Validate exploitation...
+    validations:
+      required: true
+
+  - type: textarea
+    id: detection
+    attributes:
+      label: Detection Method
+      description: How do we detect if the attack was successful?
+      placeholder: |
+        - Response contains X
+        - Time-based detection
+        - Out-of-band callback
+    validations:
+      required: true
+
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+      description: OWASP, CVEs, blog posts, or other references
+      placeholder: |
+        - https://owasp.org/...
+        - CVE-2024-XXXX
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Typical Severity
+      options:
+        - Critical
+        - High
+        - Medium
+        - Low
+        - Informational
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I would be willing to implement this module
+        - label: I have a working proof-of-concept
